@@ -871,7 +871,7 @@ func (s *ONVIFServer) processMediaRequest(w http.ResponseWriter, r *http.Request
 		s.handleGetProfile(w, bodyContent)
 	} else if strings.Contains(bodyContent, "GetStreamUri") {
 		log.Printf("[%s] Media Service - GetStreamUri", s.config.Name)
-		s.handleGetStreamUri(w, bodyContent)
+		s.handleGetStreamUri(w, r, bodyContent)
 	} else if strings.Contains(bodyContent, "GetSnapshotUri") {
 		log.Printf("[%s] Media Service - GetSnapshotUri", s.config.Name)
 		s.handleGetSnapshotUri(w, r)
@@ -1293,7 +1293,7 @@ func (s *ONVIFServer) handleGetVideoEncoderConfigurationOptions(w http.ResponseW
 	s.sendSOAPResponse(w, response)
 }
 
-func (s *ONVIFServer) handleGetStreamUri(w http.ResponseWriter, bodyContent string) {
+func (s *ONVIFServer) handleGetStreamUri(w http.ResponseWriter, r *http.Request, bodyContent string) {
 	// Determine stream path based on profile token
 	rtspPath := s.config.RTSPStream
 	if strings.Contains(bodyContent, "profile_2") || strings.Contains(bodyContent, "SubStream") {
@@ -1304,7 +1304,9 @@ func (s *ONVIFServer) handleGetStreamUri(w http.ResponseWriter, bodyContent stri
 		}
 	}
 
-	rtspURI := fmt.Sprintf("rtsp://%s:%d%s", s.rtspHost, s.rtspPort, rtspPath)
+	// Use dynamic host IP based on incoming request
+	hostIP := s.getHostIP(r)
+	rtspURI := fmt.Sprintf("rtsp://%s:%d%s", hostIP, s.rtspPort, rtspPath)
 
 	response := GetStreamUriResponse{
 		MediaUri: MediaUri{

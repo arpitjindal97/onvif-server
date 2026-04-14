@@ -21,7 +21,7 @@ FROM alpine:latest
 WORKDIR /app
 
 # Install ca-certificates for HTTPS support
-RUN apk --no-cache add ca-certificates ffmpeg
+RUN apk --no-cache add ca-certificates ffmpeg tzdata
 
 # Copy the binary from builder
 COPY --from=builder /build/onvif-server /app/onvif-server
