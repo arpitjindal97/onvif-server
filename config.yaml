@@ -1,0 +1,62 @@
+# ONVIF Server Configuration
+# Each camera will run on a different HTTP port for ONVIF but share RTSP port 554
+
+cameras:
+  - name: "Tapo Camera"
+    manufacturer: "TP-Link"
+    model: "Tapo C200"
+    serial: "TAPO001"
+    http_port: 8081                      # ONVIF HTTP port
+    rtsp_stream: "/tapo"                 # RTSP path: rtsp://your-ip:554/tapo
+    substream_enabled: true              # Enable substream profile
+    substream_path: "/tapo_sub"          # Full substream path
+
+  - name: "Parking Camera"
+    manufacturer: "Generic"
+    model: "IP Camera"
+    serial: "CAM002"
+    http_port: 8082
+    rtsp_stream: "/parking"
+    substream_enabled: true
+    substream_path: "/parking_sub"
+
+  - name: "Terrace Camera"
+    manufacturer: "Generic"
+    model: "IP Camera"
+    serial: "CAM003"
+    http_port: 8083
+    rtsp_stream: "/terrace"
+    substream_enabled: true
+    substream_path: "/terrace_sub"
+
+  - name: "Back Stairs Camera"
+    manufacturer: "Generic"
+    model: "IP Camera"
+    serial: "CAM004"
+    http_port: 8084
+    rtsp_stream: "/backstairs"
+    substream_enabled: true
+    substream_path: "/backstairs_sub"
+
+  - name: "Main Gate Camera"
+    manufacturer: "TP-Link"
+    model: "Vigi C460V"
+    serial: "CAM005"
+    http_port: 8085
+    rtsp_stream: "/maingate_sub"
+    substream_enabled: true
+    substream_path: "/maingate_sub"
+
+  - name: "Tapo Camera"
+    manufacturer: "TP-Link"
+    model: "Tapo C200"
+    serial: "TAPO001"
+    http_port: 8086                      # ONVIF HTTP port
+    rtsp_stream: "/tapo_sub"                 # RTSP path: rtsp://your-ip:554/tapo
+    substream_enabled: true              # Enable substream profile
+    substream_path: "/tapo_sub"          # Full substream path
+
+# Global settings
+rtsp_host: "100.83.105.33"           # Leave empty to auto-detect, or set explicitly like "camera.msmartpay.in"
+rtsp_port: 554
+enable_discovery: true  # Enable WS-Discovery for NVR auto-detection
