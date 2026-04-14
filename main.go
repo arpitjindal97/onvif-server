@@ -408,6 +408,17 @@ type AudioEncoderOption struct {
 	SampleRateList    *IntList  `xml:"tt:SampleRateList,omitempty"`
 }
 
+// Audio Sources
+type GetAudioSourcesResponse struct {
+	XMLName      xml.Name      `xml:"trt:GetAudioSourcesResponse"`
+	AudioSources []AudioSource `xml:"trt:AudioSources"`
+}
+
+type AudioSource struct {
+	Token    string `xml:"token,attr"`
+	Channels int    `xml:"tt:Channels"`
+}
+
 type IntList struct {
 	Items []int `xml:"tt:Items"`
 }
@@ -634,7 +645,9 @@ func (s *ONVIFServer) handleUnifiedService(w http.ResponseWriter, r *http.Reques
 		strings.Contains(bodyContent, "GetProfile") ||
 		strings.Contains(bodyContent, "GetStreamUri") ||
 		strings.Contains(bodyContent, "GetSnapshotUri") ||
-		strings.Contains(bodyContent, "GetVideoEncoderConfiguration") {
+		strings.Contains(bodyContent, "GetVideoEncoderConfiguration") ||
+		strings.Contains(bodyContent, "GetAudioSources") ||
+		strings.Contains(bodyContent, "GetAudioEncoderConfiguration") {
 		log.Printf("[%s] Routing to Media Service [%s]", s.config.Name, r.RequestURI)
 		s.processMediaRequest(w, r, body)
 	} else if strings.Contains(bodyContent, "GetDeviceInformation") ||
@@ -880,6 +893,9 @@ func (s *ONVIFServer) processMediaRequest(w http.ResponseWriter, r *http.Request
 	} else if strings.Contains(bodyContent, "GetAudioEncoderConfigurationOptions") {
 		log.Printf("[%s] Media Service - GetAudioEncoderConfigurationOptions", s.config.Name)
 		s.handleGetAudioEncoderConfigurationOptions(w)
+	} else if strings.Contains(bodyContent, "GetAudioSources") {
+		log.Printf("[%s] Media Service - GetAudioSources", s.config.Name)
+		s.handleGetAudioSources(w)
 	} else {
 		log.Printf("[%s] Media Service - Unsupported operation: %s", s.config.Name, bodyContent[:min(100, len(bodyContent))])
 		s.sendSOAPFault(w, "Client", "Unsupported operation")
@@ -1366,6 +1382,19 @@ func (s *ONVIFServer) handleGetAudioEncoderConfigurationOptions(w http.ResponseW
 						Items: []int{8},
 					},
 				},
+			},
+		},
+	}
+	s.sendSOAPResponse(w, response)
+}
+
+func (s *ONVIFServer) handleGetAudioSources(w http.ResponseWriter) {
+	// Return a single audio source - most NVRs just need to see at least one
+	response := GetAudioSourcesResponse{
+		AudioSources: []AudioSource{
+			{
+				Token:    "AudioSource_1",
+				Channels: 1,
 			},
 		},
 	}
