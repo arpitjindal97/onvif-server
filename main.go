@@ -572,6 +572,18 @@ func (s *ONVIFServer) detectStreamInfo(isSubstream bool) {
 	)
 }
 
+// getONVIFEncoding returns ONVIF-compatible encoding value
+// H265/HEVC is reported as H264 for maximum NVR compatibility
+// since ONVIF Profile S only officially supports H264
+func (s *ONVIFServer) getONVIFEncoding(codec string) string {
+	// Map H265 to H264 for ONVIF Profile S compatibility
+	// Most NVRs will accept the actual H265 RTSP stream regardless
+	if codec == "H265" || codec == "HEVC" {
+		return "H264"
+	}
+	return codec
+}
+
 // startStreamInfoRefresh periodically refreshes stream info
 func (s *ONVIFServer) startStreamInfoRefresh(interval time.Duration) {
 	go func() {
@@ -880,7 +892,7 @@ func (s *ONVIFServer) handleGetProfiles(w http.ResponseWriter) {
 		Token:    "VideoEncoder_1",
 		Name:     "VideoEncoderConfig",
 		UseCount: 1,
-		Encoding: s.streamInfo.Codec,
+		Encoding: s.getONVIFEncoding(s.streamInfo.Codec),
 		Resolution: Resolution{
 			Width:  s.streamInfo.Width,
 			Height: s.streamInfo.Height,
@@ -903,12 +915,14 @@ func (s *ONVIFServer) handleGetProfiles(w http.ResponseWriter) {
 		SessionTimeout: "PT60S",
 	}
 
-	// Only add H264 config if codec is H264
-	if s.streamInfo.Codec == "H264" {
-		mainEncoder.H264 = &H264Config{
-			GovLength:   50,
-			H264Profile: s.streamInfo.Profile,
-		}
+	// Always add H264 config block for ONVIF compatibility
+	// Even for H265 streams (which we report as H264)
+	mainEncoder.H264 = &H264Config{
+		GovLength:   50,
+		H264Profile: s.streamInfo.Profile,
+	}
+	if mainEncoder.H264.H264Profile == "" {
+		mainEncoder.H264.H264Profile = "Main"
 	}
 
 	profiles := []Profile{
@@ -938,7 +952,7 @@ func (s *ONVIFServer) handleGetProfiles(w http.ResponseWriter) {
 			Token:    "VideoEncoder_2",
 			Name:     "VideoEncoderConfig_Sub",
 			UseCount: 1,
-			Encoding: s.substreamInfo.Codec,
+			Encoding: s.getONVIFEncoding(s.substreamInfo.Codec),
 			Resolution: Resolution{
 				Width:  s.substreamInfo.Width,
 				Height: s.substreamInfo.Height,
@@ -961,12 +975,14 @@ func (s *ONVIFServer) handleGetProfiles(w http.ResponseWriter) {
 			SessionTimeout: "PT60S",
 		}
 
-		// Only add H264 config if codec is H264
-		if s.substreamInfo.Codec == "H264" {
-			subEncoder.H264 = &H264Config{
-				GovLength:   25,
-				H264Profile: s.substreamInfo.Profile,
-			}
+		// Always add H264 config block for ONVIF compatibility
+		// Even for H265 streams (which we report as H264)
+		subEncoder.H264 = &H264Config{
+			GovLength:   25,
+			H264Profile: s.substreamInfo.Profile,
+		}
+		if subEncoder.H264.H264Profile == "" {
+			subEncoder.H264.H264Profile = "Main"
 		}
 
 		profiles = append(profiles, Profile{
@@ -1004,7 +1020,7 @@ func (s *ONVIFServer) handleGetProfile(w http.ResponseWriter, bodyContent string
 			Token:    "VideoEncoder_2",
 			Name:     "VideoEncoderConfig_Sub",
 			UseCount: 1,
-			Encoding: s.substreamInfo.Codec,
+			Encoding: s.getONVIFEncoding(s.substreamInfo.Codec),
 			Resolution: Resolution{
 				Width:  s.substreamInfo.Width,
 				Height: s.substreamInfo.Height,
@@ -1027,12 +1043,14 @@ func (s *ONVIFServer) handleGetProfile(w http.ResponseWriter, bodyContent string
 			SessionTimeout: "PT60S",
 		}
 
-		// Only add H264 config if codec is H264
-		if s.substreamInfo.Codec == "H264" {
-			subEncoder.H264 = &H264Config{
-				GovLength:   25,
-				H264Profile: s.substreamInfo.Profile,
-			}
+		// Always add H264 config block for ONVIF compatibility
+		// Even for H265 streams (which we report as H264)
+		subEncoder.H264 = &H264Config{
+			GovLength:   25,
+			H264Profile: s.substreamInfo.Profile,
+		}
+		if subEncoder.H264.H264Profile == "" {
+			subEncoder.H264.H264Profile = "Main"
 		}
 
 		profile := Profile{
@@ -1066,7 +1084,7 @@ func (s *ONVIFServer) handleGetProfile(w http.ResponseWriter, bodyContent string
 		Token:    "VideoEncoder_1",
 		Name:     "VideoEncoderConfig",
 		UseCount: 1,
-		Encoding: s.streamInfo.Codec,
+		Encoding: s.getONVIFEncoding(s.streamInfo.Codec),
 		Resolution: Resolution{
 			Width:  s.streamInfo.Width,
 			Height: s.streamInfo.Height,
@@ -1089,12 +1107,14 @@ func (s *ONVIFServer) handleGetProfile(w http.ResponseWriter, bodyContent string
 		SessionTimeout: "PT60S",
 	}
 
-	// Only add H264 config if codec is H264
-	if s.streamInfo.Codec == "H264" {
-		mainEncoder.H264 = &H264Config{
-			GovLength:   50,
-			H264Profile: s.streamInfo.Profile,
-		}
+	// Always add H264 config block for ONVIF compatibility
+	// Even for H265 streams (which we report as H264)
+	mainEncoder.H264 = &H264Config{
+		GovLength:   50,
+		H264Profile: s.streamInfo.Profile,
+	}
+	if mainEncoder.H264.H264Profile == "" {
+		mainEncoder.H264.H264Profile = "Main"
 	}
 
 	profile := Profile{
@@ -1130,7 +1150,7 @@ func (s *ONVIFServer) handleGetVideoEncoderConfiguration(w http.ResponseWriter, 
 			Token:    "VideoEncoder_2",
 			Name:     "VideoEncoderConfig_Sub",
 			UseCount: 1,
-			Encoding: s.substreamInfo.Codec,
+			Encoding: s.getONVIFEncoding(s.substreamInfo.Codec),
 			Resolution: Resolution{
 				Width:  s.substreamInfo.Width,
 				Height: s.substreamInfo.Height,
@@ -1153,12 +1173,14 @@ func (s *ONVIFServer) handleGetVideoEncoderConfiguration(w http.ResponseWriter, 
 			SessionTimeout: "PT60S",
 		}
 
-		// Only add H264 config if codec is H264
-		if s.substreamInfo.Codec == "H264" {
-			subEncoder.H264 = &H264Config{
-				GovLength:   25,
-				H264Profile: s.substreamInfo.Profile,
-			}
+		// Always add H264 config block for ONVIF compatibility
+		// Even for H265 streams (which we report as H264)
+		subEncoder.H264 = &H264Config{
+			GovLength:   25,
+			H264Profile: s.substreamInfo.Profile,
+		}
+		if subEncoder.H264.H264Profile == "" {
+			subEncoder.H264.H264Profile = "Main"
 		}
 
 		response := GetVideoEncoderConfigurationResponse{
@@ -1173,7 +1195,7 @@ func (s *ONVIFServer) handleGetVideoEncoderConfiguration(w http.ResponseWriter, 
 		Token:    "VideoEncoder_1",
 		Name:     "VideoEncoderConfig",
 		UseCount: 1,
-		Encoding: s.streamInfo.Codec,
+		Encoding: s.getONVIFEncoding(s.streamInfo.Codec),
 		Resolution: Resolution{
 			Width:  s.streamInfo.Width,
 			Height: s.streamInfo.Height,
@@ -1196,12 +1218,14 @@ func (s *ONVIFServer) handleGetVideoEncoderConfiguration(w http.ResponseWriter, 
 		SessionTimeout: "PT60S",
 	}
 
-	// Only add H264 config if codec is H264
-	if s.streamInfo.Codec == "H264" {
-		mainEncoder.H264 = &H264Config{
-			GovLength:   50,
-			H264Profile: s.streamInfo.Profile,
-		}
+	// Always add H264 config block for ONVIF compatibility
+	// Even for H265 streams (which we report as H264)
+	mainEncoder.H264 = &H264Config{
+		GovLength:   50,
+		H264Profile: s.streamInfo.Profile,
+	}
+	if mainEncoder.H264.H264Profile == "" {
+		mainEncoder.H264.H264Profile = "Main"
 	}
 
 	response := GetVideoEncoderConfigurationResponse{
