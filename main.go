@@ -808,6 +808,8 @@ func (s *ONVIFServer) handleGetSystemDateAndTime(w http.ResponseWriter, body []b
 	offset := s.timeOffsets[username]
 	s.timeOffsetsMu.RUnlock()
 
+	log.Printf("[%s] GetSystemDateAndTime for user '%s', offset: %v", s.config.Name, username, offset)
+
 	now := time.Now().Add(offset)
 	utc := now.UTC()
 
