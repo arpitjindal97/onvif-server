@@ -71,6 +71,18 @@ type GetSystemDateAndTimeResponse struct {
 	SystemDateAndTime SystemDateAndTime `xml:"tds:SystemDateAndTime"`
 }
 
+type SetSystemDateAndTime struct {
+	XMLName         xml.Name `xml:"http://www.onvif.org/ver10/device/wsdl SetSystemDateAndTime"`
+	DateTimeType    string   `xml:"DateTimeType"`
+	DaylightSavings bool     `xml:"DaylightSavings"`
+	TimeZone        *TimeZone `xml:"TimeZone,omitempty"`
+	UTCDateTime     *DateTime `xml:"UTCDateTime,omitempty"`
+}
+
+type SetSystemDateAndTimeResponse struct {
+	XMLName xml.Name `xml:"tds:SetSystemDateAndTimeResponse"`
+}
+
 type SystemDateAndTime struct {
 	DateTimeType    string   `xml:"tt:DateTimeType"`
 	DaylightSavings bool     `xml:"tt:DaylightSavings"`
@@ -124,9 +136,14 @@ type GetCapabilitiesResponse struct {
 
 type Capabilities struct {
 	Media MediaCapabilities `xml:"tt:Media"`
+	Events EventCapabilities `xml:"tt:Events"`
 }
 
 type MediaCapabilities struct {
+	XAddr string `xml:"tt:XAddr"`
+}
+
+type EventCapabilities struct {
 	XAddr string `xml:"tt:XAddr"`
 }
 
@@ -423,6 +440,27 @@ type IntList struct {
 	Items []int `xml:"tt:Items"`
 }
 
+// WS-Notification structures for event subscriptions
+type Subscribe struct {
+	XMLName           xml.Name `xml:"http://docs.oasis-open.org/wsn/b-2 Subscribe"`
+	ConsumerReference struct {
+		Address string `xml:"Address"`
+	} `xml:"ConsumerReference"`
+	Filter *struct {
+		TopicExpression string `xml:"TopicExpression,omitempty"`
+	} `xml:"Filter,omitempty"`
+	InitialTerminationTime *string `xml:"InitialTerminationTime,omitempty"`
+}
+
+type SubscribeResponse struct {
+	XMLName              xml.Name `xml:"wsnt:SubscribeResponse"`
+	SubscriptionReference struct {
+		Address string `xml:"wsa5:Address"`
+	} `xml:"wsnt:SubscriptionReference"`
+	CurrentTime    string `xml:"wsnt:CurrentTime,omitempty"`
+	TerminationTime string `xml:"wsnt:TerminationTime,omitempty"`
+}
+
 // ONVIFServer represents an ONVIF server for a single camera
 type ONVIFServer struct {
 	config        CameraConfig
@@ -619,6 +657,7 @@ func (s *ONVIFServer) Start() error {
 	// Standard ONVIF endpoints
 	mux.HandleFunc("/onvif/device_service", s.handleDeviceService)
 	mux.HandleFunc("/onvif/media_service", s.handleMediaService)
+	mux.HandleFunc("/onvif/event_service", s.handleEventService)
 
 	addr := fmt.Sprintf(":%d", s.config.HTTPPort)
 	log.Printf("Starting ONVIF server for '%s' on %s (RTSP: rtsp://%s:%d%s)",
@@ -650,8 +689,12 @@ func (s *ONVIFServer) handleUnifiedService(w http.ResponseWriter, r *http.Reques
 		strings.Contains(bodyContent, "GetAudioEncoderConfiguration") {
 		log.Printf("[%s] Routing to Media Service [%s]", s.config.Name, r.RequestURI)
 		s.processMediaRequest(w, r, body)
+	} else if strings.Contains(bodyContent, "Subscribe") {
+		log.Printf("[%s] Routing to Event Service [%s]", s.config.Name, r.RequestURI)
+		s.processEventRequest(w, r, body)
 	} else if strings.Contains(bodyContent, "GetDeviceInformation") ||
 		strings.Contains(bodyContent, "GetSystemDateAndTime") ||
+		strings.Contains(bodyContent, "SetSystemDateAndTime") ||
 		strings.Contains(bodyContent, "GetCapabilities") ||
 		strings.Contains(bodyContent, "GetServices") {
 		log.Printf("[%s] Routing to Device Service [%s]", s.config.Name, r.RequestURI)
@@ -701,6 +744,9 @@ func (s *ONVIFServer) processDeviceRequest(w http.ResponseWriter, r *http.Reques
 	if strings.Contains(bodyContent, "GetSystemDateAndTime") {
 		log.Printf("[%s] Device Service - GetSystemDateAndTime", s.config.Name)
 		s.handleGetSystemDateAndTime(w)
+	} else if strings.Contains(bodyContent, "SetSystemDateAndTime") {
+		log.Printf("[%s] Device Service - SetSystemDateAndTime", s.config.Name)
+		s.handleSetSystemDateAndTime(w, bodyContent)
 	} else if strings.Contains(bodyContent, "GetDeviceInformation") {
 		log.Printf("[%s] Device Service - GetDeviceInformation", s.config.Name)
 		s.handleGetDeviceInformation(w)
@@ -760,6 +806,15 @@ func (s *ONVIFServer) handleGetSystemDateAndTime(w http.ResponseWriter) {
 	s.sendSOAPResponse(w, response)
 }
 
+func (s *ONVIFServer) handleSetSystemDateAndTime(w http.ResponseWriter, bodyContent string) {
+	// Parse the request (not strictly needed since we'll accept any time setting)
+	// This is typically a stub - most cameras don't actually set system time
+	log.Printf("[%s] SetSystemDateAndTime requested (operation accepted but not implemented)", s.config.Name)
+
+	response := SetSystemDateAndTimeResponse{}
+	s.sendSOAPResponse(w, response)
+}
+
 func (s *ONVIFServer) handleGetDeviceInformation(w http.ResponseWriter) {
 	response := GetDeviceInformationResponse{
 		Manufacturer:    s.config.Manufacturer,
@@ -780,6 +835,9 @@ func (s *ONVIFServer) handleGetCapabilities(w http.ResponseWriter, r *http.Reque
 			Media: MediaCapabilities{
 				XAddr: baseURL + "/onvif/service",
 			},
+			Events: EventCapabilities{
+				XAddr: baseURL + "/onvif/service",
+			},
 		},
 	}
 
@@ -798,6 +856,11 @@ func (s *ONVIFServer) handleGetServices(w http.ResponseWriter, r *http.Request) 
 			},
 			{
 				Namespace: "http://www.onvif.org/ver10/media/wsdl",
+				XAddr:     baseURL + "/onvif/service",
+				Version:   Version{Major: 2, Minor: 5},
+			},
+			{
+				Namespace: "http://www.onvif.org/ver10/events/wsdl",
 				XAddr:     baseURL + "/onvif/service",
 				Version:   Version{Major: 2, Minor: 5},
 			},
@@ -834,6 +897,93 @@ func (s *ONVIFServer) handleGetNetworkInterfaces(w http.ResponseWriter, r *http.
 	}
 
 	s.sendSOAPResponse(w, response)
+}
+
+func (s *ONVIFServer) handleEventService(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	s.processEventRequest(w, r, body)
+}
+
+func (s *ONVIFServer) processEventRequest(w http.ResponseWriter, r *http.Request, body []byte) {
+	var envelope struct {
+		XMLName xml.Name `xml:"Envelope"`
+		Body    struct {
+			Content []byte `xml:",innerxml"`
+		} `xml:"Body"`
+	}
+
+	if err := xml.Unmarshal(body, &envelope); err != nil {
+		log.Printf("[%s] Event Service - Failed to parse SOAP: %v", s.config.Name, err)
+		s.sendSOAPFault(w, "Client", "Invalid SOAP request")
+		return
+	}
+
+	bodyContent := string(envelope.Body.Content)
+
+	if strings.Contains(bodyContent, "Subscribe") {
+		log.Printf("[%s] Event Service - Subscribe", s.config.Name)
+		s.handleSubscribe(w, r)
+	} else {
+		log.Printf("[%s] Event Service - Unsupported operation: %s", s.config.Name, bodyContent[:min(100, len(bodyContent))])
+		s.sendSOAPFault(w, "Client", "Unsupported operation")
+	}
+}
+
+func (s *ONVIFServer) handleSubscribe(w http.ResponseWriter, r *http.Request) {
+	// Create a basic subscription response
+	// The subscription endpoint is the event service itself
+	baseURL := fmt.Sprintf("http://%s:%d", s.getHostIP(r), s.config.HTTPPort)
+	subscriptionAddr := baseURL + "/onvif/subscription/events"
+
+	// Set termination time to 1 hour from now
+	now := time.Now().UTC()
+	terminationTime := now.Add(1 * time.Hour)
+
+	response := SubscribeResponse{}
+	response.SubscriptionReference.Address = subscriptionAddr
+	response.CurrentTime = now.Format(time.RFC3339)
+	response.TerminationTime = terminationTime.Format(time.RFC3339)
+
+	// Build SOAP envelope with proper namespaces
+	body := struct {
+		XMLName xml.Name    `xml:"SOAP-ENV:Body"`
+		Content interface{} `xml:",any"`
+	}{
+		Content: response,
+	}
+
+	envelope := struct {
+		XMLName xml.Name    `xml:"SOAP-ENV:Envelope"`
+		SOAPENV string      `xml:"xmlns:SOAP-ENV,attr"`
+		WSNT    string      `xml:"xmlns:wsnt,attr"`
+		WSA5    string      `xml:"xmlns:wsa5,attr"`
+		Body    interface{} `xml:"SOAP-ENV:Body"`
+	}{
+		SOAPENV: "http://www.w3.org/2003/05/soap-envelope",
+		WSNT:    "http://docs.oasis-open.org/wsn/b-2",
+		WSA5:    "http://www.w3.org/2005/08/addressing",
+		Body:    body,
+	}
+
+	output, err := xml.MarshalIndent(envelope, "", "  ")
+	if err != nil {
+		log.Printf("[%s] Failed to marshal subscription response: %v", s.config.Name, err)
+		http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
+		return
+	}
+
+	responseStr := xml.Header + string(output)
+	log.Printf("[%s] Sending Subscription Response:\n%s", s.config.Name, responseStr)
+
+	w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(responseStr))
 }
 
 func (s *ONVIFServer) handleMediaService(w http.ResponseWriter, r *http.Request) {
