@@ -72,11 +72,11 @@ type GetSystemDateAndTimeResponse struct {
 }
 
 type SetSystemDateAndTime struct {
-	XMLName         xml.Name `xml:"http://www.onvif.org/ver10/device/wsdl SetSystemDateAndTime"`
-	DateTimeType    string   `xml:"http://www.onvif.org/ver10/device/wsdl DateTimeType"`
-	DaylightSavings bool     `xml:"http://www.onvif.org/ver10/device/wsdl DaylightSavings"`
-	TimeZone        *TimeZone `xml:"http://www.onvif.org/ver10/device/wsdl TimeZone,omitempty"`
-	UTCDateTime     *DateTime `xml:"http://www.onvif.org/ver10/device/wsdl UTCDateTime,omitempty"`
+	XMLName         xml.Name `xml:"SetSystemDateAndTime"`
+	DateTimeType    string   `xml:"DateTimeType"`
+	DaylightSavings bool     `xml:"DaylightSavings"`
+	TimeZone        *TimeZone `xml:"TimeZone,omitempty"`
+	UTCDateTime     *DateTime `xml:"UTCDateTime,omitempty"`
 }
 
 type SetSystemDateAndTimeResponse struct {
@@ -96,20 +96,20 @@ type TimeZone struct {
 }
 
 type DateTime struct {
-	Time Time `xml:"tt:Time"`
-	Date Date `xml:"tt:Date"`
+	Time Time `xml:"http://www.onvif.org/ver10/schema Time"`
+	Date Date `xml:"http://www.onvif.org/ver10/schema Date"`
 }
 
 type Time struct {
-	Hour   int `xml:"tt:Hour"`
-	Minute int `xml:"tt:Minute"`
-	Second int `xml:"tt:Second"`
+	Hour   int `xml:"http://www.onvif.org/ver10/schema Hour"`
+	Minute int `xml:"http://www.onvif.org/ver10/schema Minute"`
+	Second int `xml:"http://www.onvif.org/ver10/schema Second"`
 }
 
 type Date struct {
-	Year  int `xml:"tt:Year"`
-	Month int `xml:"tt:Month"`
-	Day   int `xml:"tt:Day"`
+	Year  int `xml:"http://www.onvif.org/ver10/schema Year"`
+	Month int `xml:"http://www.onvif.org/ver10/schema Month"`
+	Day   int `xml:"http://www.onvif.org/ver10/schema Day"`
 }
 
 type GetDeviceInformation struct {
