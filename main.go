@@ -850,7 +850,9 @@ func (s *ONVIFServer) handleGetSystemDateAndTime(w http.ResponseWriter, body []b
 
 func (s *ONVIFServer) handleSetSystemDateAndTime(w http.ResponseWriter, body []byte) {
 	username := s.getClientIdentifier(body)
+	bodyContent := string(body)
 	log.Printf("[%s] SetSystemDateAndTime requested from user '%s'", s.config.Name, username)
+	log.Printf("[%s] SetSystemDateAndTime request body:\n%s", s.config.Name, bodyContent)
 
 	// Parse the incoming request
 	var envelope struct {
