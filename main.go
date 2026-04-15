@@ -73,10 +73,10 @@ type GetSystemDateAndTimeResponse struct {
 
 type SetSystemDateAndTime struct {
 	XMLName         xml.Name `xml:"http://www.onvif.org/ver10/device/wsdl SetSystemDateAndTime"`
-	DateTimeType    string   `xml:"DateTimeType"`
-	DaylightSavings bool     `xml:"DaylightSavings"`
-	TimeZone        *TimeZone `xml:"TimeZone,omitempty"`
-	UTCDateTime     *DateTime `xml:"UTCDateTime,omitempty"`
+	DateTimeType    string   `xml:"http://www.onvif.org/ver10/device/wsdl DateTimeType"`
+	DaylightSavings bool     `xml:"http://www.onvif.org/ver10/device/wsdl DaylightSavings"`
+	TimeZone        *TimeZone `xml:"http://www.onvif.org/ver10/device/wsdl TimeZone,omitempty"`
+	UTCDateTime     *DateTime `xml:"http://www.onvif.org/ver10/device/wsdl UTCDateTime,omitempty"`
 }
 
 type SetSystemDateAndTimeResponse struct {
