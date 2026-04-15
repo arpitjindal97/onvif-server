@@ -468,6 +468,8 @@ type ONVIFServer struct {
 	rtspPort      int
 	streamInfo    *StreamInfo
 	substreamInfo *StreamInfo
+	timeOffsets   map[string]time.Duration // Per-client time offsets (keyed by WS-Security username)
+	timeOffsetsMu sync.RWMutex             // Protects timeOffsets map
 }
 
 // StreamInfo holds detected stream properties
@@ -482,9 +484,10 @@ type StreamInfo struct {
 
 func NewONVIFServer(config CameraConfig, rtspHost string, rtspPort int) *ONVIFServer {
 	server := &ONVIFServer{
-		config:   config,
-		rtspHost: rtspHost,
-		rtspPort: rtspPort,
+		config:      config,
+		rtspHost:    rtspHost,
+		rtspPort:    rtspPort,
+		timeOffsets: make(map[string]time.Duration),
 		streamInfo: &StreamInfo{
 			// Defaults for main stream
 			Width:     1920,
@@ -621,6 +624,30 @@ func (s *ONVIFServer) detectStreamInfo(isSubstream bool) {
 	)
 }
 
+// getClientIdentifier extracts the WS-Security username from the SOAP request body
+// This is used to uniquely identify different NVRs even if they share the same IP (e.g., via Tailscale)
+func (s *ONVIFServer) getClientIdentifier(body []byte) string {
+	// Parse WS-Security username from SOAP envelope
+	var envelope struct {
+		Header struct {
+			Security struct {
+				UsernameToken struct {
+					Username string `xml:"Username"`
+				} `xml:"UsernameToken"`
+			} `xml:"Security"`
+		} `xml:"Header"`
+	}
+
+	if err := xml.Unmarshal(body, &envelope); err == nil {
+		if envelope.Header.Security.UsernameToken.Username != "" {
+			return envelope.Header.Security.UsernameToken.Username
+		}
+	}
+
+	// Fallback to "default" if no username found
+	return "default"
+}
+
 // getONVIFEncoding returns ONVIF-compatible encoding value
 // H265/HEVC is reported as H264 for maximum NVR compatibility
 // since ONVIF Profile S only officially supports H264
@@ -751,10 +778,10 @@ func (s *ONVIFServer) processDeviceRequest(w http.ResponseWriter, r *http.Reques
 	// Route based on SOAP action
 	if strings.Contains(bodyContent, "GetSystemDateAndTime") {
 		log.Printf("[%s] Device Service - GetSystemDateAndTime", s.config.Name)
-		s.handleGetSystemDateAndTime(w)
+		s.handleGetSystemDateAndTime(w, body)
 	} else if strings.Contains(bodyContent, "SetSystemDateAndTime") {
 		log.Printf("[%s] Device Service - SetSystemDateAndTime", s.config.Name)
-		s.handleSetSystemDateAndTime(w, bodyContent)
+		s.handleSetSystemDateAndTime(w, body)
 	} else if strings.Contains(bodyContent, "GetDeviceInformation") {
 		log.Printf("[%s] Device Service - GetDeviceInformation", s.config.Name)
 		s.handleGetDeviceInformation(w)
@@ -773,8 +800,15 @@ func (s *ONVIFServer) processDeviceRequest(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-func (s *ONVIFServer) handleGetSystemDateAndTime(w http.ResponseWriter) {
-	now := time.Now()
+func (s *ONVIFServer) handleGetSystemDateAndTime(w http.ResponseWriter, body []byte) {
+	username := s.getClientIdentifier(body)
+
+	// Get client-specific time offset
+	s.timeOffsetsMu.RLock()
+	offset := s.timeOffsets[username]
+	s.timeOffsetsMu.RUnlock()
+
+	now := time.Now().Add(offset)
 	utc := now.UTC()
 
 	response := GetSystemDateAndTimeResponse{
@@ -814,10 +848,45 @@ func (s *ONVIFServer) handleGetSystemDateAndTime(w http.ResponseWriter) {
 	s.sendSOAPResponse(w, response)
 }
 
-func (s *ONVIFServer) handleSetSystemDateAndTime(w http.ResponseWriter, bodyContent string) {
-	// Parse the request (not strictly needed since we'll accept any time setting)
-	// This is typically a stub - most cameras don't actually set system time
-	log.Printf("[%s] SetSystemDateAndTime requested (operation accepted but not implemented)", s.config.Name)
+func (s *ONVIFServer) handleSetSystemDateAndTime(w http.ResponseWriter, body []byte) {
+	username := s.getClientIdentifier(body)
+	log.Printf("[%s] SetSystemDateAndTime requested from user '%s'", s.config.Name, username)
+
+	// Parse the incoming request
+	var envelope struct {
+		Body struct {
+			SetSystemDateAndTime SetSystemDateAndTime
+		} `xml:"Body"`
+	}
+
+	if err := xml.Unmarshal(body, &envelope); err == nil {
+		req := envelope.Body.SetSystemDateAndTime
+
+		// If UTCDateTime is provided, calculate offset
+		if req.UTCDateTime != nil {
+			requestedTime := time.Date(
+				req.UTCDateTime.Date.Year,
+				time.Month(req.UTCDateTime.Date.Month),
+				req.UTCDateTime.Date.Day,
+				req.UTCDateTime.Time.Hour,
+				req.UTCDateTime.Time.Minute,
+				req.UTCDateTime.Time.Second,
+				0,
+				time.UTC,
+			)
+
+			currentTime := time.Now().UTC()
+			offset := requestedTime.Sub(currentTime)
+
+			// Store offset for this username
+			s.timeOffsetsMu.Lock()
+			s.timeOffsets[username] = offset
+			s.timeOffsetsMu.Unlock()
+
+			log.Printf("[%s] Time offset for user '%s' set to %v (NVR time: %v, System time: %v)",
+				s.config.Name, username, offset, requestedTime.Format(time.RFC3339), currentTime.Format(time.RFC3339))
+		}
+	}
 
 	response := SetSystemDateAndTimeResponse{}
 	s.sendSOAPResponse(w, response)
