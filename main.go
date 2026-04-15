@@ -720,6 +720,14 @@ func (s *ONVIFServer) handleDeviceService(w http.ResponseWriter, r *http.Request
 	}
 	defer r.Body.Close()
 
+	// Check if this is a Subscribe request (should be routed to event service)
+	bodyContent := string(body)
+	if strings.Contains(bodyContent, "Subscribe") {
+		log.Printf("[%s] Routing Subscribe from Device Service to Event Service", s.config.Name)
+		s.processEventRequest(w, r, body)
+		return
+	}
+
 	s.processDeviceRequest(w, r, body)
 }
 
