@@ -17,8 +17,10 @@ cameras:
     serial: "CAM002"
     http_port: 8082
     rtsp_stream: "/parking"
+    #h264_profile: "High"                 # H264 profile: Baseline, Main, or High
     substream_enabled: true
     substream_path: "/parking_sub"
+    #substream_h264_profile: "Main"       # Substream profile
 
   - name: "Terrace Camera"
     manufacturer: "Generic"
@@ -60,3 +62,7 @@ cameras:
 # rtsp_host: Leave empty to auto-detect and use dynamic IP from incoming requests
 rtsp_port: 554
 enable_discovery: true  # Enable WS-Discovery for NVR auto-detection
+
+# Authentication (required for WS-Security)
+username: "admin"
+password: "admin123"
