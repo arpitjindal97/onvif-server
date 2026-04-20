@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -12,6 +14,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +45,16 @@ type CameraConfig struct {
 	SubstreamEnabled     bool   `yaml:"substream_enabled"`
 	SubstreamPath        string `yaml:"substream_path"`
 	SubstreamH264Profile string `yaml:"substream_h264_profile"`
+}
+
+// StreamInfo holds detected stream properties
+type StreamInfo struct {
+	Width     int
+	Height    int
+	Codec     string
+	FrameRate int
+	BitRate   int // in kbps
+	Profile   string
 }
 
 // WS-Security structures
@@ -155,6 +170,7 @@ type Capabilities struct {
 	Events    *EventCapabilities     `xml:"tt:Events,omitempty"`
 	Imaging   *ImagingCapabilities   `xml:"tt:Imaging,omitempty"`
 	Media     *MediaCapabilities     `xml:"tt:Media,omitempty"`
+	Media2    *Media2Capabilities    `xml:"tt:Media2,omitempty"`
 	PTZ       *PTZCapabilities       `xml:"tt:PTZ,omitempty"`
 	Extension *struct{}              `xml:"tt:Extension,omitempty"`
 }
@@ -242,6 +258,10 @@ type StreamingCapabilities struct {
 }
 
 type PTZCapabilities struct {
+	XAddr string `xml:"tt:XAddr"`
+}
+
+type Media2Capabilities struct {
 	XAddr string `xml:"tt:XAddr"`
 }
 
@@ -649,24 +669,220 @@ type ClientTimeSettings struct {
 
 // ONVIFServer represents the server
 type ONVIFServer struct {
-	config        CameraConfig
-	rtspHost      string
-	rtspPort      int
-	username      string
-	password      string
-	timeSettings  *ClientTimeSettings // Stored time synchronization settings
-	timeSettingsMu sync.RWMutex       // Protects timeSettings
-	mu            sync.RWMutex
+	config          CameraConfig
+	rtspHost        string
+	rtspPort        int
+	username        string
+	password        string
+	timeSettings    *ClientTimeSettings // Stored time synchronization settings
+	timeSettingsMu  sync.RWMutex        // Protects timeSettings
+	mu              sync.RWMutex
+	streamInfo      *StreamInfo  // Main stream information
+	substreamInfo   *StreamInfo  // Substream information
+	streamInfoMu    sync.RWMutex // Protects streamInfo and substreamInfo
+	bitrateCache    map[string]int // Cache for bitrate limits keyed by V_ENC_CFG_* token
+	bitrateMu       sync.RWMutex   // Protects bitrateCache
 }
 
 func NewONVIFServer(config CameraConfig, rtspHost string, rtspPort int, username, password string) *ONVIFServer {
-	return &ONVIFServer{
+	s := &ONVIFServer{
 		config:       config,
 		rtspHost:     rtspHost,
 		rtspPort:     rtspPort,
 		username:     username,
 		password:     password,
 		timeSettings: nil, // Will be set when NVR calls SetSystemDateAndTime
+		streamInfo: &StreamInfo{
+			// Defaults for main stream
+			Width:     1920,
+			Height:    1080,
+			Codec:     "H264",
+			FrameRate: 25,
+			BitRate:   4096,
+			Profile:   "High",
+		},
+		substreamInfo: &StreamInfo{
+			// Defaults for substream (lower quality) - using standard D1 resolution
+			Width:     640,
+			Height:    480,
+			Codec:     "H264",
+			FrameRate: 15,
+			BitRate:   512,
+			Profile:   "Baseline",
+		},
+		bitrateCache: make(map[string]int),
+	}
+
+	// Detect stream info asynchronously (non-blocking)
+	go s.detectStreamInfo(false) // Main stream
+
+	// Detect substream info if enabled
+	if config.SubstreamEnabled {
+		go s.detectStreamInfo(true) // Substream
+	}
+
+	return s
+}
+
+// detectStreamInfo uses ffprobe to detect stream properties
+func (s *ONVIFServer) detectStreamInfo(isSubstream bool) {
+	streamPath := s.config.RTSPStream
+	streamType := "main"
+	var targetInfo *StreamInfo
+
+	if isSubstream {
+		streamPath = s.config.SubstreamPath
+		if streamPath == "" {
+			streamPath = s.config.RTSPStream + "_sub" // Default fallback
+		}
+		streamType = "sub"
+	}
+
+	// Lock to get the correct target
+	s.streamInfoMu.RLock()
+	if isSubstream {
+		targetInfo = s.substreamInfo
+	} else {
+		targetInfo = s.streamInfo
+	}
+	s.streamInfoMu.RUnlock()
+
+	rtspURL := fmt.Sprintf("rtsp://localhost:%d%s", s.rtspPort, streamPath)
+
+	log.Printf("[%s] 🔍 Detecting %s stream properties for '%s'...", s.config.Name, streamType, streamPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "ffprobe",
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=codec_name,width,height,r_frame_rate,bit_rate,profile",
+		"-of", "json",
+		rtspURL,
+	)
+
+	output, err := cmd.Output()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			log.Printf("[%s] ⚠️  Stream detection timeout for %s stream '%s' (using defaults: %dx%d %s %dkbps)",
+				s.config.Name, streamType, streamPath, targetInfo.Width, targetInfo.Height, targetInfo.Codec, targetInfo.BitRate)
+		} else {
+			log.Printf("[%s] ⚠️  Failed to detect %s stream '%s': %v (using defaults: %dx%d %s %dkbps)",
+				s.config.Name, streamType, streamPath, err, targetInfo.Width, targetInfo.Height, targetInfo.Codec, targetInfo.BitRate)
+		}
+		return
+	}
+
+	var result struct {
+		Streams []struct {
+			CodecName  string `json:"codec_name"`
+			Width      int    `json:"width"`
+			Height     int    `json:"height"`
+			RFrameRate string `json:"r_frame_rate"`
+			BitRate    string `json:"bit_rate"`
+			Profile    string `json:"profile"`
+		} `json:"streams"`
+	}
+
+	if err := json.Unmarshal(output, &result); err != nil {
+		log.Printf("[%s] ⚠️  Failed to parse ffprobe output for %s stream: %v", s.config.Name, streamType, err)
+		return
+	}
+
+	if len(result.Streams) == 0 {
+		log.Printf("[%s] ⚠️  No video stream found for %s stream", s.config.Name, streamType)
+		return
+	}
+
+	stream := result.Streams[0]
+
+	// Update stream info with lock
+	s.streamInfoMu.Lock()
+	defer s.streamInfoMu.Unlock()
+
+	if isSubstream {
+		targetInfo = s.substreamInfo
+	} else {
+		targetInfo = s.streamInfo
+	}
+
+	// Update properties
+	if stream.Width > 0 {
+		targetInfo.Width = stream.Width
+	}
+	if stream.Height > 0 {
+		targetInfo.Height = stream.Height
+	}
+	if stream.CodecName != "" {
+		codec := strings.ToUpper(stream.CodecName)
+		// Map HEVC to H265 for NVR compatibility
+		if codec == "HEVC" {
+			codec = "H265"
+		}
+		targetInfo.Codec = codec
+	}
+	if stream.Profile != "" {
+		targetInfo.Profile = stream.Profile
+	}
+
+	// Parse frame rate (e.g., "25/1" -> 25)
+	if stream.RFrameRate != "" {
+		parts := strings.Split(stream.RFrameRate, "/")
+		if len(parts) == 2 {
+			num, _ := strconv.Atoi(parts[0])
+			den, _ := strconv.Atoi(parts[1])
+			if den > 0 {
+				targetInfo.FrameRate = num / den
+			}
+		}
+	}
+
+	// Parse bit rate (convert from bps to kbps)
+	if stream.BitRate != "" {
+		bitRate, _ := strconv.Atoi(stream.BitRate)
+		if bitRate > 0 {
+			targetInfo.BitRate = bitRate / 1024
+		}
+	}
+
+	log.Printf("[%s] ✅ Detected %s stream '%s': %dx%d %s %dfps %dkbps Profile:%s",
+		s.config.Name,
+		streamType,
+		streamPath,
+		targetInfo.Width,
+		targetInfo.Height,
+		targetInfo.Codec,
+		targetInfo.FrameRate,
+		targetInfo.BitRate,
+		targetInfo.Profile,
+	)
+}
+
+// startStreamDetectionRoutine runs a background goroutine that refreshes stream detection every 10 minutes for all servers
+func startStreamDetectionRoutine(servers []*ONVIFServer) {
+	log.Printf("🔄 Global stream detection routine started (runs immediately then every 10 minutes for all cameras)")
+
+	// Run first iteration immediately
+	for _, server := range servers {
+		go server.detectStreamInfo(false) // Main stream
+		if server.config.SubstreamEnabled {
+			go server.detectStreamInfo(true) // Substream
+		}
+	}
+
+	// Then continue with periodic refresh
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		log.Printf("🔄 Refreshing stream detection for all cameras...")
+		for _, server := range servers {
+			go server.detectStreamInfo(false) // Main stream
+			if server.config.SubstreamEnabled {
+				go server.detectStreamInfo(true) // Substream
+			}
+		}
 	}
 }
 
@@ -676,6 +892,7 @@ func (s *ONVIFServer) Start() error {
 	// ONVIF endpoints
 	mux.HandleFunc("/onvif/device_service", s.handleRequest)
 	mux.HandleFunc("/onvif/media_service", s.handleRequest)
+	mux.HandleFunc("/onvif/media2_service", s.handleRequest)
 	mux.HandleFunc("/onvif/event_service", s.handleRequest)
 	mux.HandleFunc("/onvif/imaging_service", s.handleRequest)
 	mux.HandleFunc("/onvif/ptz_service", s.handleRequest)
@@ -821,7 +1038,9 @@ func (s *ONVIFServer) routeRequest(w http.ResponseWriter, r *http.Request, bodyC
 	} else if strings.Contains(bodyContent, "GetVideoEncoderConfigurations") {
 		s.handleGetVideoEncoderConfigurations(w, r)
 	} else if strings.Contains(bodyContent, "GetVideoEncoderConfiguration") {
-		s.handleGetVideoEncoderConfiguration(w, r)
+		s.handleGetVideoEncoderConfiguration(w, r, bodyContent)
+	} else if strings.Contains(bodyContent, "SetVideoEncoderConfiguration") {
+		s.handleSetVideoEncoderConfiguration(w, r, bodyContent)
 	// Event Service
 	} else if strings.Contains(bodyContent, "Subscribe") {
 		s.handleSubscribe(w, r)
@@ -989,6 +1208,9 @@ func (s *ONVIFServer) handleGetCapabilities(w http.ResponseWriter, r *http.Reque
 					RTP_RTSP_TCP: true,
 				},
 			},
+			Media2: &Media2Capabilities{
+				XAddr: baseURL + "/onvif/media2_service",
+			},
 			PTZ: &PTZCapabilities{
 				XAddr: baseURL + "/onvif/ptz_service",
 			},
@@ -1010,6 +1232,11 @@ func (s *ONVIFServer) handleGetServices(w http.ResponseWriter, r *http.Request) 
 			{
 				Namespace: "http://www.onvif.org/ver10/media/wsdl",
 				XAddr:     baseURL + "/onvif/media_service",
+				Version:   Version{Major: 2, Minor: 6},
+			},
+			{
+				Namespace: "http://www.onvif.org/ver20/media/wsdl",
+				XAddr:     baseURL + "/onvif/media2_service",
 				Version:   Version{Major: 2, Minor: 6},
 			},
 			{
@@ -1526,24 +1753,46 @@ func (s *ONVIFServer) handleGetProfiles(w http.ResponseWriter, r *http.Request) 
 func (s *ONVIFServer) handleGetStreamUri(w http.ResponseWriter, r *http.Request, bodyContent string) {
 	hostIP := s.getHostIP(r)
 
-	// Determine stream subtype based on profile
+	// Log the full request for debugging
+	log.Printf("[%s] 🎬 GetStreamUri REQUEST BODY:\n%s", s.config.Name, bodyContent)
+
+	// Determine stream subtype based on StreamType or profile
 	subtype := 0 // Default main stream
-	if strings.Contains(bodyContent, "Profile001") {
+	profileToken := "Profile000"
+
+	// Check for StreamType parameter (Hikvision uses this)
+	if strings.Contains(bodyContent, "<StreamType>RTP-Unicast-Substream</StreamType>") ||
+		strings.Contains(bodyContent, "<StreamType>RTP-Unicast-Sub</StreamType>") ||
+		strings.Contains(bodyContent, "<tt:StreamType>RTP-Unicast-Substream</tt:StreamType>") ||
+		strings.Contains(bodyContent, "<tt:StreamType>RTP-Unicast-Sub</tt:StreamType>") {
 		subtype = 1
+		log.Printf("[%s] 🎬 GetStreamUri: StreamType indicates SUBSTREAM", s.config.Name)
+	} else if strings.Contains(bodyContent, "Profile001") {
+		subtype = 1
+		profileToken = "Profile001"
+		log.Printf("[%s] 🎬 GetStreamUri: Profile001 detected -> SUBSTREAM", s.config.Name)
 	} else if strings.Contains(bodyContent, "Profile002") {
 		subtype = 2
+		profileToken = "Profile002"
+		log.Printf("[%s] 🎬 GetStreamUri: Profile002 detected -> SUBSTREAM (low quality)", s.config.Name)
+	} else if strings.Contains(bodyContent, "Profile000") {
+		profileToken = "Profile000"
+		log.Printf("[%s] 🎬 GetStreamUri: Profile000 detected -> MAIN stream", s.config.Name)
 	}
 
 	// Determine stream path - use different paths for different profiles
 	streamPath := s.config.RTSPStream
+	streamName := "MAIN"
 	if subtype == 1 && s.config.SubstreamEnabled {
 		streamPath = s.config.SubstreamPath
+		streamName = "SUBSTREAM"
 		if streamPath == "" {
 			streamPath = s.config.RTSPStream + "_sub"
 		}
 	} else if subtype == 2 && s.config.SubstreamEnabled {
 		// For Profile002 (lowest quality), append _sub2 or use substream path
 		streamPath = s.config.SubstreamPath
+		streamName = "SUBSTREAM"
 		if streamPath == "" {
 			streamPath = s.config.RTSPStream + "_sub"
 		}
@@ -1560,6 +1809,9 @@ func (s *ONVIFServer) handleGetStreamUri(w http.ResponseWriter, r *http.Request,
 		rtspURL = fmt.Sprintf("rtsp://%s:%d%s?channel=1&subtype=%d&unicast=true&proto=Onvif",
 			hostIP, s.rtspPort, streamPath, subtype)
 	}
+
+	log.Printf("[%s] 🎬 GetStreamUri: Profile=%s, Subtype=%d, Stream=%s, Path='%s' -> %s",
+		s.config.Name, profileToken, subtype, streamName, streamPath, rtspURL)
 
 	response := GetStreamUriResponse{
 		MediaUri: MediaUri{
@@ -1655,25 +1907,102 @@ func (s *ONVIFServer) handleGetVideoEncoderConfigurations(w http.ResponseWriter,
 	s.sendSOAPResponse(w, response)
 }
 
-func (s *ONVIFServer) handleGetVideoEncoderConfiguration(w http.ResponseWriter, r *http.Request) {
+// probeRTSPResolution uses ffprobe to detect actual stream resolution
+// getStreamInfoForToken returns the appropriate StreamInfo based on token
+// Returns (streamInfo, isSubstream)
+func (s *ONVIFServer) getStreamInfoForToken(token string) (*StreamInfo, bool) {
+	// Check if this is a known substream token
+	isSubstream := false
+	if token == "V_ENC_CFG_001" || token == "V_ENC_CFG_002" {
+		isSubstream = true
+	} else {
+		// For unknown tokens (e.g., VideoEncoder001), check bitrate to determine stream type
+		s.bitrateMu.RLock()
+		bitrate, bitrateSet := s.bitrateCache[token]
+		s.bitrateMu.RUnlock()
+
+		// If bitrate is set and it's low (<=1024), use substream
+		if bitrateSet && bitrate <= 1024 {
+			isSubstream = true
+		}
+	}
+
+	s.streamInfoMu.RLock()
+	defer s.streamInfoMu.RUnlock()
+
+	if isSubstream {
+		return s.substreamInfo, true
+	}
+	return s.streamInfo, false
+}
+
+// getRTSPURLForToken returns the RTSP URL for a given encoder token
+func (s *ONVIFServer) getRTSPURLForToken(token string, hostIP string) string {
+	_, isSubstream := s.getStreamInfoForToken(token)
+
+	streamPath := s.config.RTSPStream
+	if isSubstream {
+		if s.config.SubstreamEnabled && s.config.SubstreamPath != "" {
+			streamPath = s.config.SubstreamPath
+		} else {
+			streamPath = s.config.RTSPStream + "_sub"
+		}
+	}
+
+	return fmt.Sprintf("rtsp://%s:%d%s", hostIP, s.rtspPort, streamPath)
+}
+
+func (s *ONVIFServer) handleGetVideoEncoderConfiguration(w http.ResponseWriter, r *http.Request, bodyContent string) {
+	// Extract token from request - look for ConfigurationToken in XML
+	token := "V_ENC_CFG_000" // Default to main stream
+	tokenRegex := regexp.MustCompile(`<.*?:?ConfigurationToken>([^<]+)</`)
+	if match := tokenRegex.FindStringSubmatch(bodyContent); len(match) > 1 {
+		token = match[1]
+	}
+
+	// Get stream info for this token
+	streamInfo, isSubstream := s.getStreamInfoForToken(token)
+
+	// Determine stream name for logging
+	streamName := s.config.RTSPStream
+	if isSubstream {
+		if s.config.SubstreamEnabled && s.config.SubstreamPath != "" {
+			streamName = s.config.SubstreamPath
+		} else {
+			streamName = s.config.RTSPStream + "_sub"
+		}
+	}
+
+	log.Printf("[%s] 📹 GetVideoEncoderConfiguration for stream '%s' (token %s): %dx%d %s %dfps %dkbps Profile:%s",
+		s.config.Name,
+		streamName,
+		token,
+		streamInfo.Width,
+		streamInfo.Height,
+		streamInfo.Codec,
+		streamInfo.FrameRate,
+		streamInfo.BitRate,
+		streamInfo.Profile,
+	)
+
 	config := VideoEncoderConfiguration{
-		Token:    "VideoEncoderToken",
-		Name:     "VideoEncoderConfig",
+		Token:    token,
+		Name:     token,
 		UseCount: 1,
-		Encoding: "H264",
+		Encoding: streamInfo.Codec,
 		Resolution: Resolution{
-			Width:  1920,
-			Height: 1080,
+			Width:  streamInfo.Width,
+			Height: streamInfo.Height,
 		},
 		Quality: 5.0,
 		RateControl: &RateControl{
-			FrameRateLimit:   25,
+			FrameRateLimit:   streamInfo.FrameRate,
 			EncodingInterval: 1,
-			BitrateLimit:     4096,
+			BitrateLimit:     streamInfo.BitRate,
 		},
 		H264: &H264Config{
 			GovLength:   50,
-			H264Profile: "High",
+			H264Profile: streamInfo.Profile,
 		},
 		Multicast: Multicast{
 			Address: MulticastAddress{
@@ -1691,6 +2020,50 @@ func (s *ONVIFServer) handleGetVideoEncoderConfiguration(w http.ResponseWriter, 
 		Configuration: config,
 	}
 	s.sendSOAPResponse(w, response)
+}
+
+func (s *ONVIFServer) handleSetVideoEncoderConfiguration(w http.ResponseWriter, r *http.Request, bodyContent string) {
+	// Log the request to understand what the NVR is trying to change
+	log.Printf("[%s] 🔧 SetVideoEncoderConfiguration REQUEST:\n%s", s.config.Name, bodyContent)
+
+	// Extract token if present
+	tokenRegex := regexp.MustCompile(`<.*?:?Configuration.*?token="([^"]+)"`)
+	token := ""
+	if match := tokenRegex.FindStringSubmatch(bodyContent); len(match) > 1 {
+		token = match[1]
+		log.Printf("[%s] 🔧 SetVideoEncoderConfiguration: Token=%s", s.config.Name, token)
+	}
+
+	// Extract BitrateLimit from request (this is the key parameter for stream switching)
+	bitrateRegex := regexp.MustCompile(`<.*?:?BitrateLimit>(\d+)</`)
+	if match := bitrateRegex.FindStringSubmatch(bodyContent); len(match) > 1 {
+		bitrateStr := match[1]
+		if bitrate, err := strconv.Atoi(bitrateStr); err == nil {
+			// Store the bitrate in cache
+			s.bitrateMu.Lock()
+			s.bitrateCache[token] = bitrate
+			s.bitrateMu.Unlock()
+			log.Printf("[%s] 🔧 SetVideoEncoderConfiguration: BitrateLimit stored -> %d kbps for token %s", s.config.Name, bitrate, token)
+		} else {
+			log.Printf("[%s] ⚠️ SetVideoEncoderConfiguration: Failed to parse BitrateLimit: %s", s.config.Name, bitrateStr)
+		}
+	}
+
+	// Return empty success response (matching real camera behavior from logs)
+	// The response uses Media2 namespace (tr2)
+	responseXML := `<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope"
+                   xmlns:tr2="http://www.onvif.org/ver20/media/wsdl">
+  <SOAP-ENV:Body>
+    <tr2:SetVideoEncoderConfigurationResponse></tr2:SetVideoEncoderConfigurationResponse>
+  </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>`
+
+	log.Printf("[%s] ✅ SetVideoEncoderConfiguration: Acknowledging configuration change", s.config.Name)
+
+	w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(responseXML))
 }
 
 func (s *ONVIFServer) handleGetVideoEncoderConfigurationOptions(w http.ResponseWriter, r *http.Request) {
@@ -2096,17 +2469,29 @@ func main() {
 		go startDiscoveryService()
 	}
 
+	// Create all servers first
+	var servers []*ONVIFServer
+	for _, camConfig := range config.Cameras {
+		server := NewONVIFServer(camConfig, rtspHost, config.RTSPPort, config.Username, config.Password)
+		servers = append(servers, server)
+	}
+
+	// Start single global stream detection routine for all cameras
+	go startStreamDetectionRoutine(servers)
+
+	// Give the routine a moment to start first iteration
+	time.Sleep(100 * time.Millisecond)
+
 	// Start ONVIF server for each camera
 	var wg sync.WaitGroup
-	for _, camConfig := range config.Cameras {
+	for _, server := range servers {
 		wg.Add(1)
-		go func(cfg CameraConfig) {
+		go func(s *ONVIFServer) {
 			defer wg.Done()
-			server := NewONVIFServer(cfg, rtspHost, config.RTSPPort, config.Username, config.Password)
-			if err := server.Start(); err != nil {
-				log.Printf("Server for '%s' failed: %v", cfg.Name, err)
+			if err := s.Start(); err != nil {
+				log.Printf("Server for '%s' failed: %v", s.config.Name, err)
 			}
-		}(camConfig)
+		}(server)
 
 		time.Sleep(100 * time.Millisecond)
 	}
