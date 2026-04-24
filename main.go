@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -23,6 +24,21 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// Global debug flag
+var debugMode bool
+
+// logDebug logs messages only when debug mode is enabled
+func logDebug(format string, args ...interface{}) {
+	if debugMode {
+		log.Printf(format, args...)
+	}
+}
+
+// logInfo logs important informational messages (always shown)
+func logInfo(format string, args ...interface{}) {
+	log.Printf(format, args...)
+}
 
 // Config structures
 type Config struct {
@@ -749,7 +765,7 @@ func (s *ONVIFServer) detectStreamInfo(isSubstream bool) {
 
 	rtspURL := fmt.Sprintf("rtsp://localhost:%d%s", s.rtspPort, streamPath)
 
-	log.Printf("[%s] 🔍 Detecting %s stream properties for '%s'...", s.config.Name, streamType, streamPath)
+	logDebug("[%s] 🔍 Detecting %s stream properties for '%s'...", s.config.Name, streamType, streamPath)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -765,10 +781,10 @@ func (s *ONVIFServer) detectStreamInfo(isSubstream bool) {
 	output, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			log.Printf("[%s] ⚠️  Stream detection timeout for %s stream '%s' (using defaults: %dx%d %s %dkbps)",
+			logDebug("[%s] ⚠️  Stream detection timeout for %s stream '%s' (using defaults: %dx%d %s %dkbps)",
 				s.config.Name, streamType, streamPath, targetInfo.Width, targetInfo.Height, targetInfo.Codec, targetInfo.BitRate)
 		} else {
-			log.Printf("[%s] ⚠️  Failed to detect %s stream '%s': %v (using defaults: %dx%d %s %dkbps)",
+			logDebug("[%s] ⚠️  Failed to detect %s stream '%s': %v (using defaults: %dx%d %s %dkbps)",
 				s.config.Name, streamType, streamPath, err, targetInfo.Width, targetInfo.Height, targetInfo.Codec, targetInfo.BitRate)
 		}
 		return
@@ -786,12 +802,12 @@ func (s *ONVIFServer) detectStreamInfo(isSubstream bool) {
 	}
 
 	if err := json.Unmarshal(output, &result); err != nil {
-		log.Printf("[%s] ⚠️  Failed to parse ffprobe output for %s stream: %v", s.config.Name, streamType, err)
+		logDebug("[%s] ⚠️  Failed to parse ffprobe output for %s stream: %v", s.config.Name, streamType, err)
 		return
 	}
 
 	if len(result.Streams) == 0 {
-		log.Printf("[%s] ⚠️  No video stream found for %s stream", s.config.Name, streamType)
+		logDebug("[%s] ⚠️  No video stream found for %s stream", s.config.Name, streamType)
 		return
 	}
 
@@ -846,7 +862,7 @@ func (s *ONVIFServer) detectStreamInfo(isSubstream bool) {
 		}
 	}
 
-	log.Printf("[%s] ✅ Detected %s stream '%s': %dx%d %s %dfps %dkbps Profile:%s",
+	logInfo("[%s] ✅ Detected %s stream '%s': %dx%d %s %dfps %dkbps Profile:%s",
 		s.config.Name,
 		streamType,
 		streamPath,
@@ -861,7 +877,7 @@ func (s *ONVIFServer) detectStreamInfo(isSubstream bool) {
 
 // startStreamDetectionRoutine runs a background goroutine that refreshes stream detection every 10 minutes for all servers
 func startStreamDetectionRoutine(servers []*ONVIFServer) {
-	log.Printf("🔄 Global stream detection routine started (runs immediately then every 10 minutes for all cameras)")
+	logDebug("🔄 Global stream detection routine started (runs immediately then every 10 minutes for all cameras)")
 
 	// Run first iteration immediately
 	for _, server := range servers {
@@ -876,7 +892,7 @@ func startStreamDetectionRoutine(servers []*ONVIFServer) {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		log.Printf("🔄 Refreshing stream detection for all cameras...")
+		logDebug("🔄 Refreshing stream detection for all cameras...")
 		for _, server := range servers {
 			go server.detectStreamInfo(false) // Main stream
 			if server.config.SubstreamEnabled {
@@ -904,7 +920,7 @@ func (s *ONVIFServer) Start() error {
 	mux.HandleFunc("/onvif/snapshot", s.handleSnapshot)
 
 	addr := fmt.Sprintf(":%d", s.config.HTTPPort)
-	log.Printf("Starting ONVIF server for '%s' on %s", s.config.Name, addr)
+	logInfo("Starting ONVIF server for '%s' on %s", s.config.Name, addr)
 
 	return http.ListenAndServe(addr, mux)
 }
@@ -917,7 +933,7 @@ func (s *ONVIFServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	log.Printf("[%s] Request to %s:\n%s", s.config.Name, r.URL.Path, string(body))
+	logDebug("[%s] Request to %s:\n%s", s.config.Name, r.URL.Path, string(body))
 
 	// Parse SOAP envelope
 	var envelope struct {
@@ -931,7 +947,7 @@ func (s *ONVIFServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := xml.Unmarshal(body, &envelope); err != nil {
-		log.Printf("[%s] Failed to parse SOAP: %v", s.config.Name, err)
+		logDebug("[%s] Failed to parse SOAP: %v", s.config.Name, err)
 		s.sendSOAPFault(w, "s:Sender", "ter:InvalidArgVal", "Invalid SOAP request")
 		return
 	}
@@ -939,7 +955,7 @@ func (s *ONVIFServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Validate WS-Security if present
 	if envelope.Header.Security != nil {
 		if !s.validateSecurity(envelope.Header.Security) {
-			log.Printf("[%s] Authentication failed", s.config.Name)
+			logDebug("[%s] Authentication failed", s.config.Name)
 			s.sendSOAPFault(w, "s:Sender", "ter:NotAuthorized", "Authentication failed")
 			return
 		}
@@ -961,19 +977,19 @@ func (s *ONVIFServer) validateSecurity(security *Security) bool {
 	nonce := security.UsernameToken.Nonce.Value
 	created := security.UsernameToken.Created
 
-	log.Printf("[%s] Auth check - Username: '%s', Nonce: '%s', Created: '%s', ReceivedDigest: '%s'",
+	logDebug("[%s] Auth check - Username: '%s', Nonce: '%s', Created: '%s', ReceivedDigest: '%s'",
 		s.config.Name, username, nonce, created, password)
 
 	// Validate username
 	if username != s.username {
-		log.Printf("[%s] Username mismatch: got '%s', expected '%s'", s.config.Name, username, s.username)
+		logDebug("[%s] Username mismatch: got '%s', expected '%s'", s.config.Name, username, s.username)
 		return false
 	}
 
 	// Decode nonce
 	nonceBytes, err := base64.StdEncoding.DecodeString(nonce)
 	if err != nil {
-		log.Printf("[%s] Failed to decode nonce: %v", s.config.Name, err)
+		logDebug("[%s] Failed to decode nonce: %v", s.config.Name, err)
 		return false
 	}
 
@@ -985,7 +1001,7 @@ func (s *ONVIFServer) validateSecurity(security *Security) bool {
 	h.Write([]byte(s.password))
 	expectedDigest := base64.StdEncoding.EncodeToString(h.Sum(nil))
 
-	log.Printf("[%s] Expected digest: '%s', Received digest: '%s'", s.config.Name, expectedDigest, password)
+	logDebug("[%s] Expected digest: '%s', Received digest: '%s'", s.config.Name, expectedDigest, password)
 
 	return password == expectedDigest
 }
@@ -1080,12 +1096,12 @@ func (s *ONVIFServer) handleGetSystemDateAndTime(w http.ResponseWriter, r *http.
 		if settings.TimeZone != "" {
 			timeZone = settings.TimeZone
 		}
-		log.Printf("[%s] GetSystemDateAndTime: Returning synced time: %v (Type: %s, TZ: %s)",
+		logDebug("[%s] GetSystemDateAndTime: Returning synced time: %v (Type: %s, TZ: %s)",
 			s.config.Name, now.Format(time.RFC3339), dateTimeType, timeZone)
 	} else {
 		// No time sync set by NVR yet, return actual system time
 		now = time.Now().UTC()
-		log.Printf("[%s] GetSystemDateAndTime: Returning system time: %v (no sync yet)",
+		logDebug("[%s] GetSystemDateAndTime: Returning system time: %v (no sync yet)",
 			s.config.Name, now.Format(time.RFC3339))
 	}
 
@@ -1385,7 +1401,7 @@ func (s *ONVIFServer) handleSystemReboot(w http.ResponseWriter, r *http.Request)
 
 func (s *ONVIFServer) handleSetSystemDateAndTime(w http.ResponseWriter, r *http.Request, requestBody []byte) {
 	bodyStr := string(requestBody)
-	log.Printf("[%s] SetSystemDateAndTime request:\n%s", s.config.Name, bodyStr)
+	logDebug("[%s] SetSystemDateAndTime request:\n%s", s.config.Name, bodyStr)
 
 	// Extract time values using string parsing (more flexible than XML unmarshaling with namespaces)
 	var dateTimeType string = "Manual"
@@ -1455,18 +1471,18 @@ func (s *ONVIFServer) handleSetSystemDateAndTime(w http.ResponseWriter, r *http.
 			s.timeSettings = settings
 			s.timeSettingsMu.Unlock()
 
-			log.Printf("[%s] ✓ Time synchronized by NVR:", s.config.Name)
-			log.Printf("  - DateTimeType: %s", dateTimeType)
-			log.Printf("  - TimeZone: %s", timeZone)
-			log.Printf("  - NVR time: %v", requestedTime.Format(time.RFC3339))
-			log.Printf("  - System time: %v", systemBaseTime.Format(time.RFC3339))
-			log.Printf("  - Time offset: %v", requestedTime.Sub(systemBaseTime))
+			logInfo("[%s] ✓ Time synchronized by NVR:", s.config.Name)
+			logDebug("  - DateTimeType: %s", dateTimeType)
+			logDebug("  - TimeZone: %s", timeZone)
+			logDebug("  - NVR time: %v", requestedTime.Format(time.RFC3339))
+			logDebug("  - System time: %v", systemBaseTime.Format(time.RFC3339))
+			logDebug("  - Time offset: %v", requestedTime.Sub(systemBaseTime))
 		} else {
-			log.Printf("[%s] SetSystemDateAndTime: Invalid date/time values (Y:%d M:%d D:%d)",
+			logDebug("[%s] SetSystemDateAndTime: Invalid date/time values (Y:%d M:%d D:%d)",
 				s.config.Name, year, month, day)
 		}
 	} else {
-		log.Printf("[%s] SetSystemDateAndTime: No UTCDateTime provided", s.config.Name)
+		logDebug("[%s] SetSystemDateAndTime: No UTCDateTime provided", s.config.Name)
 	}
 
 	response := struct {
@@ -1754,7 +1770,7 @@ func (s *ONVIFServer) handleGetStreamUri(w http.ResponseWriter, r *http.Request,
 	hostIP := s.getHostIP(r)
 
 	// Log the full request for debugging
-	log.Printf("[%s] 🎬 GetStreamUri REQUEST BODY:\n%s", s.config.Name, bodyContent)
+	logDebug("[%s] 🎬 GetStreamUri REQUEST BODY:\n%s", s.config.Name, bodyContent)
 
 	// Determine stream subtype based on StreamType or profile
 	subtype := 0 // Default main stream
@@ -1766,18 +1782,18 @@ func (s *ONVIFServer) handleGetStreamUri(w http.ResponseWriter, r *http.Request,
 		strings.Contains(bodyContent, "<tt:StreamType>RTP-Unicast-Substream</tt:StreamType>") ||
 		strings.Contains(bodyContent, "<tt:StreamType>RTP-Unicast-Sub</tt:StreamType>") {
 		subtype = 1
-		log.Printf("[%s] 🎬 GetStreamUri: StreamType indicates SUBSTREAM", s.config.Name)
+		logDebug("[%s] 🎬 GetStreamUri: StreamType indicates SUBSTREAM", s.config.Name)
 	} else if strings.Contains(bodyContent, "Profile001") {
 		subtype = 1
 		profileToken = "Profile001"
-		log.Printf("[%s] 🎬 GetStreamUri: Profile001 detected -> SUBSTREAM", s.config.Name)
+		logDebug("[%s] 🎬 GetStreamUri: Profile001 detected -> SUBSTREAM", s.config.Name)
 	} else if strings.Contains(bodyContent, "Profile002") {
 		subtype = 2
 		profileToken = "Profile002"
-		log.Printf("[%s] 🎬 GetStreamUri: Profile002 detected -> SUBSTREAM (low quality)", s.config.Name)
+		logDebug("[%s] 🎬 GetStreamUri: Profile002 detected -> SUBSTREAM (low quality)", s.config.Name)
 	} else if strings.Contains(bodyContent, "Profile000") {
 		profileToken = "Profile000"
-		log.Printf("[%s] 🎬 GetStreamUri: Profile000 detected -> MAIN stream", s.config.Name)
+		logDebug("[%s] 🎬 GetStreamUri: Profile000 detected -> MAIN stream", s.config.Name)
 	}
 
 	// Determine stream path - use different paths for different profiles
@@ -1810,7 +1826,7 @@ func (s *ONVIFServer) handleGetStreamUri(w http.ResponseWriter, r *http.Request,
 			hostIP, s.rtspPort, streamPath, subtype)
 	}
 
-	log.Printf("[%s] 🎬 GetStreamUri: Profile=%s, Subtype=%d, Stream=%s, Path='%s' -> %s",
+	logInfo("[%s] 🎬 GetStreamUri: Profile=%s, Subtype=%d, Stream=%s, Path='%s' -> %s",
 		s.config.Name, profileToken, subtype, streamName, streamPath, rtspURL)
 
 	response := GetStreamUriResponse{
@@ -1973,7 +1989,7 @@ func (s *ONVIFServer) handleGetVideoEncoderConfiguration(w http.ResponseWriter, 
 		}
 	}
 
-	log.Printf("[%s] 📹 GetVideoEncoderConfiguration for stream '%s' (token %s): %dx%d %s %dfps %dkbps Profile:%s",
+	logDebug("[%s] 📹 GetVideoEncoderConfiguration for stream '%s' (token %s): %dx%d %s %dfps %dkbps Profile:%s",
 		s.config.Name,
 		streamName,
 		token,
@@ -2024,14 +2040,14 @@ func (s *ONVIFServer) handleGetVideoEncoderConfiguration(w http.ResponseWriter, 
 
 func (s *ONVIFServer) handleSetVideoEncoderConfiguration(w http.ResponseWriter, r *http.Request, bodyContent string) {
 	// Log the request to understand what the NVR is trying to change
-	log.Printf("[%s] 🔧 SetVideoEncoderConfiguration REQUEST:\n%s", s.config.Name, bodyContent)
+	logDebug("[%s] 🔧 SetVideoEncoderConfiguration REQUEST:\n%s", s.config.Name, bodyContent)
 
 	// Extract token if present
 	tokenRegex := regexp.MustCompile(`<.*?:?Configuration.*?token="([^"]+)"`)
 	token := ""
 	if match := tokenRegex.FindStringSubmatch(bodyContent); len(match) > 1 {
 		token = match[1]
-		log.Printf("[%s] 🔧 SetVideoEncoderConfiguration: Token=%s", s.config.Name, token)
+		logDebug("[%s] 🔧 SetVideoEncoderConfiguration: Token=%s", s.config.Name, token)
 	}
 
 	// Extract BitrateLimit from request (this is the key parameter for stream switching)
@@ -2043,9 +2059,9 @@ func (s *ONVIFServer) handleSetVideoEncoderConfiguration(w http.ResponseWriter, 
 			s.bitrateMu.Lock()
 			s.bitrateCache[token] = bitrate
 			s.bitrateMu.Unlock()
-			log.Printf("[%s] 🔧 SetVideoEncoderConfiguration: BitrateLimit stored -> %d kbps for token %s", s.config.Name, bitrate, token)
+			logDebug("[%s] 🔧 SetVideoEncoderConfiguration: BitrateLimit stored -> %d kbps for token %s", s.config.Name, bitrate, token)
 		} else {
-			log.Printf("[%s] ⚠️ SetVideoEncoderConfiguration: Failed to parse BitrateLimit: %s", s.config.Name, bitrateStr)
+			logDebug("[%s] ⚠️ SetVideoEncoderConfiguration: Failed to parse BitrateLimit: %s", s.config.Name, bitrateStr)
 		}
 	}
 
@@ -2059,7 +2075,7 @@ func (s *ONVIFServer) handleSetVideoEncoderConfiguration(w http.ResponseWriter, 
   </SOAP-ENV:Body>
 </SOAP-ENV:Envelope>`
 
-	log.Printf("[%s] ✅ SetVideoEncoderConfiguration: Acknowledging configuration change", s.config.Name)
+	logDebug("[%s] ✅ SetVideoEncoderConfiguration: Acknowledging configuration change", s.config.Name)
 
 	w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -2199,13 +2215,13 @@ func (s *ONVIFServer) handleSubscribe(w http.ResponseWriter, r *http.Request) {
 
 	output, err := xml.MarshalIndent(envelope, "", "  ")
 	if err != nil {
-		log.Printf("[%s] Failed to marshal response: %v", s.config.Name, err)
+		logInfo("[%s] Failed to marshal response: %v", s.config.Name, err)
 		http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
 		return
 	}
 
 	responseStr := xml.Header + string(output)
-	log.Printf("[%s] Sending Response:\n%s", s.config.Name, responseStr)
+	logDebug("[%s] Sending Response:\n%s", s.config.Name, responseStr)
 
 	w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -2289,13 +2305,13 @@ func (s *ONVIFServer) sendSOAPResponse(w http.ResponseWriter, response interface
 
 	output, err := xml.MarshalIndent(envelope, "", "  ")
 	if err != nil {
-		log.Printf("[%s] Failed to marshal response: %v", s.config.Name, err)
+		logInfo("[%s] Failed to marshal response: %v", s.config.Name, err)
 		http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
 		return
 	}
 
 	responseStr := xml.Header + string(output)
-	log.Printf("[%s] Sending Response:\n%s", s.config.Name, responseStr)
+	logDebug("[%s] Sending Response:\n%s", s.config.Name, responseStr)
 
 	w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -2332,7 +2348,7 @@ func (s *ONVIFServer) sendSOAPFault(w http.ResponseWriter, code, subcode, reason
 
 	output, _ := xml.MarshalIndent(envelope, "", "  ")
 
-	log.Printf("[%s] Sending SOAP Fault: %s - %s", s.config.Name, code, reason)
+	logDebug("[%s] Sending SOAP Fault: %s - %s", s.config.Name, code, reason)
 
 	w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
 	w.WriteHeader(http.StatusInternalServerError)
@@ -2363,30 +2379,30 @@ func (s *ONVIFServer) getHostIP(r *http.Request) string {
 func startDiscoveryService() {
 	addr, err := net.ResolveUDPAddr("udp4", "239.255.255.250:3702")
 	if err != nil {
-		log.Printf("Failed to resolve discovery address: %v", err)
+		logInfo("Failed to resolve discovery address: %v", err)
 		return
 	}
 
 	conn, err := net.ListenMulticastUDP("udp4", nil, addr)
 	if err != nil {
-		log.Printf("Failed to listen on multicast: %v", err)
+		logInfo("Failed to listen on multicast: %v", err)
 		return
 	}
 	defer conn.Close()
 
-	log.Println("WS-Discovery service started on 239.255.255.250:3702")
+	logInfo("WS-Discovery service started on 239.255.255.250:3702")
 
 	buf := make([]byte, 4096)
 	for {
 		n, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			log.Printf("Discovery read error: %v", err)
+			logDebug("Discovery read error: %v", err)
 			continue
 		}
 
 		message := string(buf[:n])
 		if strings.Contains(message, "Probe") && strings.Contains(message, "onvif") {
-			log.Printf("Received ONVIF discovery probe from %s", remoteAddr)
+			logDebug("Received ONVIF discovery probe from %s", remoteAddr)
 			// In production, respond with ProbeMatches
 		}
 	}
@@ -2447,12 +2463,18 @@ func loadConfig(filename string) (*Config, error) {
 }
 
 func main() {
-	configFile := "config.yaml"
-	if len(os.Args) > 1 {
-		configFile = os.Args[1]
+	// Parse command line flags
+	debug := flag.Bool("debug", false, "Enable debug logging (verbose output)")
+	configFile := flag.String("config", "config.yaml", "Path to configuration file")
+	flag.Parse()
+
+	debugMode = *debug
+
+	if debugMode {
+		logInfo("Debug mode enabled - verbose logging active")
 	}
 
-	config, err := loadConfig(configFile)
+	config, err := loadConfig(*configFile)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
@@ -2461,7 +2483,7 @@ func main() {
 	rtspHost := config.RTSPHost
 	if rtspHost == "" {
 		rtspHost = getOutboundIP()
-		log.Printf("Auto-detected IP: %s", rtspHost)
+		logInfo("Auto-detected IP: %s", rtspHost)
 	}
 
 	// Start WS-Discovery if enabled
@@ -2489,13 +2511,13 @@ func main() {
 		go func(s *ONVIFServer) {
 			defer wg.Done()
 			if err := s.Start(); err != nil {
-				log.Printf("Server for '%s' failed: %v", s.config.Name, err)
+				logInfo("Server for '%s' failed: %v", s.config.Name, err)
 			}
 		}(server)
 
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	log.Println("All ONVIF servers started successfully")
+	logInfo("All ONVIF servers started successfully")
 	wg.Wait()
 }
