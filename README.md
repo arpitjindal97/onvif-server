@@ -28,7 +28,7 @@ A lightweight, dependency-free **ONVIF Profile S** server written in Go. It puts
 
 ## Requirements
 
-- **Go 1.21+** (build only)
+- **Go 1.25+** (build only — pinned by `go.mod`; OTel deps require ≥ 1.23)
 - **`ffprobe`** (from FFmpeg) on `PATH` — used to detect stream parameters. Without it, sane defaults are used (1920×1080 / H.264 / 4 Mbps).
 - An RTSP source reachable from the machine running the server (e.g. an [go2rtc](https://github.com/AlexxIT/go2rtc) instance or a real camera's RTSP URL).
 
