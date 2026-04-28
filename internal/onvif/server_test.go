@@ -1,14 +1,52 @@
 package onvif
 
 import (
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aragarwal/onvif-server/internal/config"
 )
+
+// freePort returns a TCP port number that was free at the time of the call.
+// There is a tiny race window between when the port is closed and when the
+// test re-binds it via http.ListenAndServe, but it is sufficient for tests.
+func freePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("could not allocate free port: %v", err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+	return port
+}
+
+// waitForServer polls the URL until it responds 200 OK or the deadline expires.
+func waitForServer(t *testing.T, url string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+			lastErr = fmt.Errorf("status %d", resp.StatusCode)
+		} else {
+			lastErr = err
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("server did not become ready within %s: %v", timeout, lastErr)
+}
 
 func TestGetHostIP_FromHostHeaderWithPort(t *testing.T) {
 	s := newTestServer(config.CameraConfig{Name: "cam"}, "admin", "admin")
@@ -221,5 +259,103 @@ func TestRouteRequest_DispatchesEachOperation(t *testing.T) {
 				t.Errorf("missing %q in response:\n%s", tc.expectInOut, w.Body.String())
 			}
 		})
+	}
+}
+
+func TestStart_ServesSnapshotEndpoint(t *testing.T) {
+	port := freePort(t)
+	s := newTestServer(config.CameraConfig{Name: "cam", HTTPPort: port}, "admin", "admin")
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Start() }()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/snapshot", port)
+	waitForServer(t, url, 2*time.Second)
+
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET /snapshot failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "image/jpeg" {
+		t.Errorf("Content-Type = %q, want image/jpeg", got)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if len(body) < 4 || body[0] != 0xFF || body[1] != 0xD8 {
+		t.Errorf("body does not look like a JPEG: % x", body[:4])
+	}
+
+	// Sanity: Start() must still be running (i.e. not have errored synchronously).
+	select {
+	case err := <-errCh:
+		t.Fatalf("Start returned unexpectedly: %v", err)
+	default:
+	}
+}
+
+func TestStart_RoutesONVIFRequest(t *testing.T) {
+	port := freePort(t)
+	s := newTestServer(config.CameraConfig{
+		Name:         "cam",
+		Manufacturer: "AcmeCo",
+		Model:        "Model-X",
+		Serial:       "SN-9999",
+		HTTPPort:     port,
+	}, "admin", "admin")
+
+	go s.Start()
+	waitForServer(t, fmt.Sprintf("http://127.0.0.1:%d/snapshot", port), 2*time.Second)
+
+	soap := `<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope">
+<SOAP-ENV:Body><GetDeviceInformation/></SOAP-ENV:Body>
+</SOAP-ENV:Envelope>`
+
+	resp, err := http.Post(
+		fmt.Sprintf("http://127.0.0.1:%d/onvif/device_service", port),
+		"application/soap+xml; charset=utf-8",
+		strings.NewReader(soap),
+	)
+	if err != nil {
+		t.Fatalf("POST device_service failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	bs := string(body)
+	for _, want := range []string{"GetDeviceInformationResponse", "AcmeCo", "Model-X", "SN-9999"} {
+		if !strings.Contains(bs, want) {
+			t.Errorf("missing %q in response:\n%s", want, bs)
+		}
+	}
+}
+
+func TestStart_PortAlreadyInUse(t *testing.T) {
+	// Hold the port on the same address Start() binds (":port" = 0.0.0.0)
+	// so the second bind fails deterministically.
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	s := newTestServer(config.CameraConfig{Name: "cam", HTTPPort: port}, "admin", "admin")
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Start() }()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Error("expected Start to return an error when port is in use")
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("Start did not return within 2s when port was already in use")
 	}
 }
