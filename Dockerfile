@@ -10,10 +10,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code
-COPY main.go ./
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o onvif-server main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o onvif-server ./cmd/onvif-server
 
 # Runtime stage
 FROM alpine:latest
