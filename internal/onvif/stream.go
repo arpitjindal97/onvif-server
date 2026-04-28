@@ -7,13 +7,25 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aragarwal/onvif-server/internal/logger"
 )
 
-// execCommandContext is indirected so tests can substitute a fake binary.
-var execCommandContext = exec.CommandContext
+// execCommandContext is indirected (and mutex-protected) so tests can
+// substitute a fake binary without racing detection goroutines.
+var (
+	execCommandContextMu sync.RWMutex
+	execCommandContext   = exec.CommandContext
+)
+
+// runExec returns an *exec.Cmd via the (possibly swapped-by-tests) factory.
+func runExec(ctx context.Context, name string, arg ...string) *exec.Cmd {
+	execCommandContextMu.RLock()
+	defer execCommandContextMu.RUnlock()
+	return execCommandContext(ctx, name, arg...)
+}
 
 // StreamInfo holds detected stream properties for a main or sub stream.
 type StreamInfo struct {
@@ -54,7 +66,7 @@ func (s *Server) detectStreamInfo(isSubstream bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := execCommandContext(ctx, "ffprobe",
+	cmd := runExec(ctx, "ffprobe",
 		"-v", "error",
 		"-select_streams", "v:0",
 		"-show_entries", "stream=codec_name,width,height,r_frame_rate,bit_rate,profile",

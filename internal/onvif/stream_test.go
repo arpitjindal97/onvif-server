@@ -43,11 +43,19 @@ func fakeExecCommand(stdout string, fail bool) func(ctx context.Context, name st
 }
 
 // withFakeExec swaps execCommandContext for the duration of the test.
+// The mutex matches the read side in runExec so that lingering goroutines
+// from prior tests (e.g. NewServer's async detection) cannot race with us.
 func withFakeExec(t *testing.T, stdout string, fail bool) {
 	t.Helper()
+	execCommandContextMu.Lock()
 	prev := execCommandContext
 	execCommandContext = fakeExecCommand(stdout, fail)
-	t.Cleanup(func() { execCommandContext = prev })
+	execCommandContextMu.Unlock()
+	t.Cleanup(func() {
+		execCommandContextMu.Lock()
+		execCommandContext = prev
+		execCommandContextMu.Unlock()
+	})
 }
 
 func TestGetStreamInfoForToken_KnownSubstreamTokens(t *testing.T) {

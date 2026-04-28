@@ -140,6 +140,8 @@ func TestCalculateMD5(t *testing.T) {
 // detection goroutines that will harmlessly fail because the RTSP port is
 // unreachable). We only verify struct initialization here.
 func TestNewServer_InitializesDefaults(t *testing.T) {
+	withFakeExec(t, `{"streams":[]}`, false)
+
 	cfg := config.CameraConfig{
 		Name:       "cam",
 		RTSPStream: "/cam",
@@ -164,6 +166,8 @@ func TestNewServer_InitializesDefaults(t *testing.T) {
 }
 
 func TestNewServer_WithSubstream(t *testing.T) {
+	withFakeExec(t, `{"streams":[]}`, false)
+
 	cfg := config.CameraConfig{
 		Name:             "cam",
 		RTSPStream:       "/cam",
