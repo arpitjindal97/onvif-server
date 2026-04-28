@@ -194,10 +194,6 @@ internal/
   onvif/             # all SOAP handlers + server core
 ```
 
-### Test coverage
-
-The project targets ≥80 % unit-test coverage on the `internal/` packages. CI runs `go test -race -covermode=atomic ./...` on every push and uploads results to Codecov (see badge).
-
 ---
 
 ## Limitations
