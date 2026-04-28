@@ -160,10 +160,12 @@ When enabled, every HTTP request to every camera is instrumented via [`otelhttp`
 ```yaml
 metrics:
   enabled: true
-  otlp_endpoint: "localhost:4317"   # default
-  insecure: true                    # set false for TLS to a remote collector
-  service_name: "onvif-server"      # resource attribute "service.name"
+  otlp_endpoint: "collector.example.com:4317"   # required when enabled
+  insecure: true                                # set false for TLS to a remote collector
+  service_name: "onvif-server"                  # resource attribute "service.name"
 ```
+
+If `metrics.enabled: true` but `metrics.otlp_endpoint` is empty, the server fails fast on startup with `config: metrics.otlp_endpoint is required when metrics.enabled is true`.
 
 ### Emitted metrics
 

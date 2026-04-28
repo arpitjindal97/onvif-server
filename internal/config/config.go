@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -21,10 +22,16 @@ type Config struct {
 // MetricsConfig configures OpenTelemetry metric export over OTLP gRPC.
 type MetricsConfig struct {
 	Enabled      bool   `yaml:"enabled"`       // master switch
-	OTLPEndpoint string `yaml:"otlp_endpoint"` // host:port of the OTLP gRPC collector (default: localhost:4317)
-	Insecure     bool   `yaml:"insecure"`      // disable TLS for the OTLP connection (default: true)
+	OTLPEndpoint string `yaml:"otlp_endpoint"` // host:port of the OTLP gRPC collector (required when enabled)
+	Insecure     bool   `yaml:"insecure"`      // disable TLS for the OTLP connection
 	ServiceName  string `yaml:"service_name"`  // resource attribute service.name (default: onvif-server)
 }
+
+// ErrMetricsEndpointRequired is returned by Load when metrics are enabled
+// but no OTLP endpoint is configured.
+var ErrMetricsEndpointRequired = errors.New(
+	"config: metrics.otlp_endpoint is required when metrics.enabled is true",
+)
 
 // CameraConfig describes a single virtual ONVIF camera.
 type CameraConfig struct {
@@ -59,11 +66,11 @@ func Load(filename string) (*Config, error) {
 	if c.Password == "" {
 		c.Password = "admin"
 	}
-	if c.Metrics.OTLPEndpoint == "" {
-		c.Metrics.OTLPEndpoint = "localhost:4317"
-	}
 	if c.Metrics.ServiceName == "" {
 		c.Metrics.ServiceName = "onvif-server"
+	}
+	if c.Metrics.Enabled && c.Metrics.OTLPEndpoint == "" {
+		return nil, ErrMetricsEndpointRequired
 	}
 
 	return &c, nil

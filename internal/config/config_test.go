@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -78,11 +79,23 @@ func TestLoad_AppliesDefaultMetrics(t *testing.T) {
 	if cfg.Metrics.Enabled {
 		t.Error("expected Metrics.Enabled=false by default")
 	}
-	if cfg.Metrics.OTLPEndpoint != "localhost:4317" {
-		t.Errorf("OTLPEndpoint = %q, want localhost:4317", cfg.Metrics.OTLPEndpoint)
+	if cfg.Metrics.OTLPEndpoint != "" {
+		t.Errorf("OTLPEndpoint = %q, want empty (no default)", cfg.Metrics.OTLPEndpoint)
 	}
 	if cfg.Metrics.ServiceName != "onvif-server" {
 		t.Errorf("ServiceName = %q, want onvif-server", cfg.Metrics.ServiceName)
+	}
+}
+
+func TestLoad_RejectsEnabledMetricsWithoutEndpoint(t *testing.T) {
+	path := writeTemp(t, `
+cameras: []
+metrics:
+  enabled: true
+`)
+	_, err := Load(path)
+	if !errors.Is(err, ErrMetricsEndpointRequired) {
+		t.Fatalf("expected ErrMetricsEndpointRequired, got %v", err)
 	}
 }
 
