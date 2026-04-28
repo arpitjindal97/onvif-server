@@ -21,6 +21,7 @@ A lightweight, dependency-free **ONVIF Profile S** server written in Go. It puts
 - **Auto-detection** — uses `ffprobe` to populate resolution, codec, bitrate, framerate, and H.264 profile from the live RTSP stream every 10 minutes
 - **Snapshot endpoint** — returns a placeholder JPEG (real cameras typically expose a `/snapshot` URL; this is a stub)
 - **Time sync** — accepts `SetSystemDateAndTime` from NVRs and reports back the synced clock
+- **OpenTelemetry metrics** — every HTTP request is instrumented (duration, body sizes, in-flight count) and pushed to an OTLP gRPC collector when enabled
 - **Zero hardware dependencies** — runs anywhere Go does (Raspberry Pi, NAS, Docker, x86)
 
 ---
@@ -147,6 +148,57 @@ If `enable_discovery: true`, the server replies to WS-Discovery probes on `239.2
 ### Event service
 
 `Subscribe`, `GetEventProperties`, `CreatePullPointSubscription`
+
+---
+
+## Metrics (OpenTelemetry)
+
+When enabled, every HTTP request to every camera is instrumented via [`otelhttp`](https://pkg.go.dev/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp) and pushed to an OTLP/gRPC collector every 15 seconds.
+
+### Config
+
+```yaml
+metrics:
+  enabled: true
+  otlp_endpoint: "localhost:4317"   # default
+  insecure: true                    # set false for TLS to a remote collector
+  service_name: "onvif-server"      # resource attribute "service.name"
+```
+
+### Emitted metrics
+
+| Metric | Type | Description |
+|---|---|---|
+| `http.server.request.duration` | histogram | Request latency in seconds |
+| `http.server.request.body.size` | histogram | Request body size in bytes |
+| `http.server.response.body.size` | histogram | Response body size in bytes |
+| `http.server.active_requests` | up-down counter | Currently in-flight HTTP requests |
+
+Each datapoint carries the standard `http.request.method`, `http.response.status_code`, `url.scheme`, `network.protocol.name` attributes plus a custom `camera="<name>"` label so you can group by camera in your backend.
+
+### Quick local setup
+
+Run an OTel Collector that prints metrics to stdout:
+
+```yaml
+# otel-collector.yaml
+receivers:
+  otlp:
+    protocols: { grpc: { endpoint: 0.0.0.0:4317 } }
+exporters:
+  debug: { verbosity: detailed }
+service:
+  pipelines:
+    metrics: { receivers: [otlp], exporters: [debug] }
+```
+
+```bash
+docker run --rm -p 4317:4317 \
+  -v $PWD/otel-collector.yaml:/etc/otelcol/config.yaml \
+  otel/opentelemetry-collector-contrib --config /etc/otelcol/config.yaml
+```
+
+Then start the ONVIF server with `metrics.enabled: true` and watch metrics flow into the collector.
 
 ---
 

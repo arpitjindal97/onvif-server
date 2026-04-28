@@ -68,3 +68,47 @@ func TestLoad_InvalidYAML(t *testing.T) {
 		t.Fatal("expected YAML parse error, got nil")
 	}
 }
+
+func TestLoad_AppliesDefaultMetrics(t *testing.T) {
+	path := writeTemp(t, `cameras: []`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Metrics.Enabled {
+		t.Error("expected Metrics.Enabled=false by default")
+	}
+	if cfg.Metrics.OTLPEndpoint != "localhost:4317" {
+		t.Errorf("OTLPEndpoint = %q, want localhost:4317", cfg.Metrics.OTLPEndpoint)
+	}
+	if cfg.Metrics.ServiceName != "onvif-server" {
+		t.Errorf("ServiceName = %q, want onvif-server", cfg.Metrics.ServiceName)
+	}
+}
+
+func TestLoad_PreservesExplicitMetrics(t *testing.T) {
+	path := writeTemp(t, `
+cameras: []
+metrics:
+  enabled: true
+  otlp_endpoint: collector.example.com:4317
+  insecure: false
+  service_name: my-onvif
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.Metrics.Enabled {
+		t.Error("expected Metrics.Enabled=true")
+	}
+	if cfg.Metrics.OTLPEndpoint != "collector.example.com:4317" {
+		t.Errorf("OTLPEndpoint = %q", cfg.Metrics.OTLPEndpoint)
+	}
+	if cfg.Metrics.Insecure {
+		t.Error("expected Insecure=false")
+	}
+	if cfg.Metrics.ServiceName != "my-onvif" {
+		t.Errorf("ServiceName = %q", cfg.Metrics.ServiceName)
+	}
+}

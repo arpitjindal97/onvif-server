@@ -6,15 +6,22 @@ import (
 	"context"
 	"flag"
 	"log"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/aragarwal/onvif-server/internal/config"
 	"github.com/aragarwal/onvif-server/internal/discovery"
 	"github.com/aragarwal/onvif-server/internal/logger"
+	"github.com/aragarwal/onvif-server/internal/metrics"
 	"github.com/aragarwal/onvif-server/internal/netutil"
 	"github.com/aragarwal/onvif-server/internal/onvif"
 )
+
+// version is overridden at build time via -ldflags "-X main.version=...".
+var version = "dev"
 
 func main() {
 	debug := flag.Bool("debug", false, "Enable debug logging (verbose output)")
@@ -36,6 +43,19 @@ func main() {
 		rtspHost = netutil.GetOutboundIP()
 		logger.Info("Auto-detected IP: %s", rtspHost)
 	}
+
+	// Initialize OpenTelemetry metrics (no-op if disabled in config).
+	shutdownMetrics, err := metrics.Init(context.Background(), cfg.Metrics, version)
+	if err != nil {
+		logger.Info("Metrics: init failed: %v (continuing without metrics)", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownMetrics(ctx); err != nil {
+			logger.Info("Metrics: shutdown error: %v", err)
+		}
+	}()
 
 	if cfg.EnableDiscovery {
 		go discovery.Start()
@@ -63,5 +83,13 @@ func main() {
 	}
 
 	logger.Info("All ONVIF servers started successfully")
-	wg.Wait()
+
+	// Block until SIGINT/SIGTERM, then return so deferred metrics flush runs.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+	logger.Info("Shutdown signal received, exiting...")
+
+	// Note: wg is intentionally not waited on — http.ListenAndServe blocks
+	// forever in each goroutine; we exit the process after flushing metrics.
 }

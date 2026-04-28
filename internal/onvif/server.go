@@ -11,6 +11,9 @@ import (
 	"strings"
 	"sync"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/aragarwal/onvif-server/internal/config"
 	"github.com/aragarwal/onvif-server/internal/logger"
 )
@@ -97,7 +100,30 @@ func (s *Server) Start() error {
 	addr := fmt.Sprintf(":%d", s.config.HTTPPort)
 	logger.Info("Starting ONVIF server for '%s' on %s", s.config.Name, addr)
 
-	return http.ListenAndServe(addr, mux)
+	// Wrap with otelhttp so every request is recorded against the global
+	// MeterProvider (no-op when metrics are disabled). The camera-attribute
+	// middleware sits *inside* otelhttp so that otelhttp picks up the label
+	// when it records the metric on the way out.
+	handler := otelhttp.NewHandler(
+		withCameraAttribute(mux, s.config.Name),
+		"onvif",
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			return r.Method + " " + r.URL.Path
+		}),
+	)
+
+	return http.ListenAndServe(addr, handler)
+}
+
+// withCameraAttribute injects a "camera" attribute into the otelhttp Labeler
+// so emitted metrics can be sliced per camera in the backend.
+func withCameraAttribute(next http.Handler, camera string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if labeler, ok := otelhttp.LabelerFromContext(r.Context()); ok {
+			labeler.Add(attribute.String("camera", camera))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // handleRequest is the common HTTP handler for all ONVIF service endpoints.

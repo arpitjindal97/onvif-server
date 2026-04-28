@@ -15,6 +15,15 @@ type Config struct {
 	EnableDiscovery bool           `yaml:"enable_discovery"`
 	Username        string         `yaml:"username"`
 	Password        string         `yaml:"password"`
+	Metrics         MetricsConfig  `yaml:"metrics"`
+}
+
+// MetricsConfig configures OpenTelemetry metric export over OTLP gRPC.
+type MetricsConfig struct {
+	Enabled      bool   `yaml:"enabled"`       // master switch
+	OTLPEndpoint string `yaml:"otlp_endpoint"` // host:port of the OTLP gRPC collector (default: localhost:4317)
+	Insecure     bool   `yaml:"insecure"`      // disable TLS for the OTLP connection (default: true)
+	ServiceName  string `yaml:"service_name"`  // resource attribute service.name (default: onvif-server)
 }
 
 // CameraConfig describes a single virtual ONVIF camera.
@@ -49,6 +58,12 @@ func Load(filename string) (*Config, error) {
 	}
 	if c.Password == "" {
 		c.Password = "admin"
+	}
+	if c.Metrics.OTLPEndpoint == "" {
+		c.Metrics.OTLPEndpoint = "localhost:4317"
+	}
+	if c.Metrics.ServiceName == "" {
+		c.Metrics.ServiceName = "onvif-server"
 	}
 
 	return &c, nil
