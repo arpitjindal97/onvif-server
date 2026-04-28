@@ -166,28 +166,39 @@ func (s *Server) detectStreamInfo(isSubstream bool) {
 	)
 }
 
-// StartDetectionRoutine runs a background loop that refreshes stream
-// detection every 10 minutes for all servers. It blocks; run in a goroutine.
-func StartDetectionRoutine(servers []*Server) {
-	logger.Debug("🔄 Global stream detection routine started (runs immediately then every 10 minutes for all cameras)")
+// detectionInterval is how often StartDetectionRoutine refreshes stream
+// metadata for every camera. Overridden in tests.
+var detectionInterval = 10 * time.Minute
 
+// kickAllDetections fires off detection goroutines for every server's main
+// (and, if enabled, sub) stream. Extracted so it can be reused and tested.
+func kickAllDetections(servers []*Server) {
 	for _, server := range servers {
 		go server.detectStreamInfo(false)
 		if server.config.SubstreamEnabled {
 			go server.detectStreamInfo(true)
 		}
 	}
+}
 
-	ticker := time.NewTicker(10 * time.Minute)
+// StartDetectionRoutine runs a background loop that refreshes stream
+// detection for all servers at detectionInterval. It blocks until ctx is
+// cancelled; run in a goroutine.
+func StartDetectionRoutine(ctx context.Context, servers []*Server) {
+	logger.Debug("🔄 Global stream detection routine started (runs immediately then every %s for all cameras)", detectionInterval)
+
+	kickAllDetections(servers)
+
+	ticker := time.NewTicker(detectionInterval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		logger.Debug("🔄 Refreshing stream detection for all cameras...")
-		for _, server := range servers {
-			go server.detectStreamInfo(false)
-			if server.config.SubstreamEnabled {
-				go server.detectStreamInfo(true)
-			}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			logger.Debug("🔄 Refreshing stream detection for all cameras...")
+			kickAllDetections(servers)
 		}
 	}
 }

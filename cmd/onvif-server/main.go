@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"sync"
@@ -45,7 +46,7 @@ func main() {
 		servers = append(servers, onvif.NewServer(camCfg, rtspHost, cfg.RTSPPort, cfg.Username, cfg.Password))
 	}
 
-	go onvif.StartDetectionRoutine(servers)
+	go onvif.StartDetectionRoutine(context.Background(), servers)
 	time.Sleep(100 * time.Millisecond)
 
 	var wg sync.WaitGroup

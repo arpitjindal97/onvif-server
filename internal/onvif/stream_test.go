@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aragarwal/onvif-server/internal/config"
 )
@@ -295,5 +297,97 @@ func TestDetectStreamInfo_SubstreamFallbackPath(t *testing.T) {
 
 	if s.substreamInfo.Width != 352 {
 		t.Errorf("substream width = %d, want 352", s.substreamInfo.Width)
+	}
+}
+
+// swapExec installs a custom exec factory under the production mutex and
+// restores it on test cleanup.
+func swapExec(t *testing.T, fn func(ctx context.Context, name string, args ...string) *exec.Cmd) {
+	t.Helper()
+	execCommandContextMu.Lock()
+	prev := execCommandContext
+	execCommandContext = fn
+	execCommandContextMu.Unlock()
+	t.Cleanup(func() {
+		execCommandContextMu.Lock()
+		execCommandContext = prev
+		execCommandContextMu.Unlock()
+	})
+}
+
+// withInterval temporarily shortens detectionInterval for tests.
+func withInterval(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := detectionInterval
+	detectionInterval = d
+	t.Cleanup(func() { detectionInterval = prev })
+}
+
+func TestStartDetectionRoutine_KicksImmediatelyAndOnTick(t *testing.T) {
+	var calls atomic.Int64
+	base := fakeExecCommand(`{"streams":[]}`, false)
+	swapExec(t, func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		calls.Add(1)
+		return base(ctx, name, args...)
+	})
+	withInterval(t, 30*time.Millisecond)
+
+	servers := []*Server{
+		newTestServer(config.CameraConfig{Name: "cam1", RTSPStream: "/cam1"}, "admin", "admin"),
+		newTestServer(config.CameraConfig{
+			Name:             "cam2",
+			RTSPStream:       "/cam2",
+			SubstreamEnabled: true,
+			SubstreamPath:    "/cam2_sub",
+		}, "admin", "admin"),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		StartDetectionRoutine(ctx, servers)
+		close(done)
+	}()
+
+	// Wait for the immediate kick + at least 2 more ticks.
+	time.Sleep(120 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("StartDetectionRoutine did not return after context cancel")
+	}
+
+	// Each iteration: 1 (cam1 main) + 2 (cam2 main + sub) = 3 calls.
+	// We expect at least 3 iterations × 3 = 9 calls (immediate + 2 ticks).
+	got := calls.Load()
+	if got < 6 {
+		t.Errorf("ffprobe called %d times, want >= 6 (immediate + at least 1 tick)", got)
+	}
+}
+
+func TestStartDetectionRoutine_ReturnsImmediatelyOnPreCancelledContext(t *testing.T) {
+	swapExec(t, fakeExecCommand(`{"streams":[]}`, false))
+	withInterval(t, 24*time.Hour) // make sure ticker won't fire during the test
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancelled before the routine starts
+
+	servers := []*Server{
+		newTestServer(config.CameraConfig{Name: "cam", RTSPStream: "/cam"}, "admin", "admin"),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		StartDetectionRoutine(ctx, servers)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Expected: the for-select should observe ctx.Done and return.
+	case <-time.After(1 * time.Second):
+		t.Fatal("StartDetectionRoutine did not exit on pre-cancelled context within 1s")
 	}
 }
