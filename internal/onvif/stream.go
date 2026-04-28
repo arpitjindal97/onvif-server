@@ -12,6 +12,9 @@ import (
 	"github.com/aragarwal/onvif-server/internal/logger"
 )
 
+// execCommandContext is indirected so tests can substitute a fake binary.
+var execCommandContext = exec.CommandContext
+
 // StreamInfo holds detected stream properties for a main or sub stream.
 type StreamInfo struct {
 	Width     int
@@ -51,7 +54,7 @@ func (s *Server) detectStreamInfo(isSubstream bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ffprobe",
+	cmd := execCommandContext(ctx, "ffprobe",
 		"-v", "error",
 		"-select_streams", "v:0",
 		"-show_entries", "stream=codec_name,width,height,r_frame_rate,bit_rate,profile",
