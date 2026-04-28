@@ -1,3 +1,4 @@
 /onvif-server
 /bin/
+/coverage.out
 .idea

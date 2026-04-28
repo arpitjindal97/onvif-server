@@ -1,5 +1,9 @@
 # ONVIF Server
 
+[![Test](https://github.com/arpitjindal97/onvif-server/actions/workflows/test.yml/badge.svg)](https://github.com/arpitjindal97/onvif-server/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/arpitjindal97/onvif-server/branch/main/graph/badge.svg)](https://codecov.io/gh/arpitjindal97/onvif-server)
+[![Go Report Card](https://goreportcard.com/badge/github.com/arpitjindal97/onvif-server)](https://goreportcard.com/report/github.com/arpitjindal97/onvif-server)
+
 A lightweight ONVIF server implementation in Go that wraps RTSP streams and makes them discoverable by NVRs (Network Video Recorders).
 
 ## Features

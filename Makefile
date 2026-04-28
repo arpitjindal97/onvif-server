@@ -1,7 +1,7 @@
 BIN := bin/onvif-server
 PKG := ./cmd/onvif-server
 
-.PHONY: build run test vet tidy clean docker
+.PHONY: build run test coverage vet tidy clean docker
 
 build:
 	mkdir -p bin
@@ -13,6 +13,11 @@ run:
 test:
 	go test ./...
 
+coverage:
+	go test -race -covermode=atomic -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out | tail -n 1
+	@echo "HTML report: run 'go tool cover -html=coverage.out'"
+
 vet:
 	go vet ./...
 
@@ -20,7 +25,7 @@ tidy:
 	go mod tidy
 
 clean:
-	rm -rf bin
+	rm -rf bin coverage.out
 
 docker:
 	docker build -t onvif-server .
