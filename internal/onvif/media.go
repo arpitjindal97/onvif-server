@@ -140,13 +140,7 @@ func (s *Server) handleGetStreamUri(w http.ResponseWriter, r *http.Request, body
 		}
 	}
 
-	var rtspURL string
-	if s.rtspPort == 8554 {
-		rtspURL = fmt.Sprintf("rtsp://%s:%d%s", hostIP, s.rtspPort, streamPath)
-	} else {
-		rtspURL = fmt.Sprintf("rtsp://%s:%d%s?channel=1&subtype=%d&unicast=true&proto=Onvif",
-			hostIP, s.rtspPort, streamPath, subtype)
-	}
+	rtspURL := fmt.Sprintf("rtsp://%s:%d%s", hostIP, s.rtspPort, streamPath)
 
 	logger.Info("[%s] 🎬 GetStreamUri: Profile=%s, Subtype=%d, Stream=%s, Path='%s' -> %s",
 		s.config.Name, profileToken, subtype, streamName, streamPath, rtspURL)
