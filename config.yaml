@@ -66,3 +66,9 @@ enable_discovery: true  # Enable WS-Discovery for NVR auto-detection
 # Authentication (required for WS-Security)
 username: "admin"
 password: "admin123"
+
+metrics:
+  enabled: true
+  otlp_endpoint: "100.95.199.65:4317"
+  insecure: true
+  service_name: "onvif-server"
